@@ -129,6 +129,12 @@ would just tell the already-running copy to open a window and exit immediately,
 taking the server down with it. The separate profile also means the window
 remembers its size and position.
 
+The viewer pings `/__alive` every couple of seconds and the launcher stops the
+server a few seconds after those pings stop. Waiting on the browser process
+instead does not work: Edge hands the window to a different process and the one
+you started exits within seconds, which would kill the server while the window
+was still opening.
+
 If no Chromium-based browser is found it falls back to a normal tab plus a small
 window to close when you are done.
 

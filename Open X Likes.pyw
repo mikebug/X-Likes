@@ -20,13 +20,15 @@ import webbrowser
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "tools"))
 
-from serve import make_server  # noqa: E402  (path set above)
+from serve import make_server, wait_until_closed  # noqa: E402
 
-# A Chromium started against the *default* profile just tells the running copy
-# to open a window and exits immediately, which would take the server down with
-# it. Its own profile directory makes it a real, separate instance whose
-# lifetime matches the window - and it remembers size and position.
+
 def profile_dir():
+    """Its own browser profile.
+
+    Against the default profile a Chromium just tells the already-running copy
+    to open a window and exits, so there is nothing to observe. A private
+    profile also means the window remembers its size and position."""
     base = (os.environ.get("LOCALAPPDATA")
             or os.path.join(os.path.expanduser("~"), ".cache"))
     return os.path.join(base, "x-likes-viewer")
@@ -76,7 +78,7 @@ def archive_status():
 
 
 def message(title, body):
-    """Only reason to draw any UI of our own: something is wrong."""
+    """The only reason to draw any UI of our own: something went wrong."""
     import tkinter as tk
     root = tk.Tk()
     root.title(title)
@@ -90,6 +92,10 @@ def message(title, body):
     root.geometry("+%d+%d" % ((root.winfo_screenwidth() - root.winfo_width()) // 2,
                               (root.winfo_screenheight() - root.winfo_height()) // 3))
     root.mainloop()
+
+
+def selftest():
+    return os.environ.get("XLIKES_SELFTEST")
 
 
 def main():
@@ -107,8 +113,8 @@ def main():
 
     browser = find_browser()
     if not browser:
-        # No Chromium anywhere: fall back to a normal tab, and stay alive so
-        # the server outlives this function.
+        # No Chromium anywhere: open a normal tab and hold the server open
+        # behind a window the user can close.
         webbrowser.open(url)
         message("X Likes", status + "\n\nServing at " + url +
                 "\nClose this window to stop.")
@@ -123,27 +129,26 @@ def main():
         "--no-default-browser-check",
         "--disable-features=Translate",
     ]
-    if os.environ.get("XLIKES_SELFTEST"):
+    # XLIKES_HEADLESS runs the real path with no window, for testing
+    if selftest() or os.environ.get("XLIKES_HEADLESS"):
         cmd.append("--headless=new")
 
-    started = time.time()
     try:
-        proc = subprocess.Popen(cmd)
-        if os.environ.get("XLIKES_SELFTEST"):
-            time.sleep(float(os.environ["XLIKES_SELFTEST"]))
-            proc.terminate()
-        proc.wait()
+        subprocess.Popen(cmd)
     except Exception as e:
         message("X Likes", "Could not open the app window:\n%s" % e)
         server.shutdown()
         return
 
-    # If it came straight back, the window is living inside another process and
-    # waiting on this one tells us nothing - keep serving and let the user say
-    # when to stop.
-    if time.time() - started < 3 and not os.environ.get("XLIKES_SELFTEST"):
-        message("X Likes", status + "\n\nServing at " + url +
-                "\nClose this window to stop.")
+    # Deliberately not proc.wait(). Edge hands the window to a different
+    # process and the one started here exits within seconds, which used to pull
+    # the server out from under a window that was still opening. The page says
+    # when it is there, and when it has gone.
+    if selftest():
+        time.sleep(float(selftest()))
+    elif wait_until_closed(server) == "the viewer never connected":
+        message("X Likes", "The viewer window never opened.\n\n"
+                           "Try opening this by hand:\n" + url)
 
     server.shutdown()
 

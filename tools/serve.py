@@ -15,6 +15,7 @@ import functools
 import os
 import socket
 import sys
+import time
 import webbrowser
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
@@ -23,6 +24,18 @@ VIEWER = "/likes-viewer/"
 
 
 class Handler(SimpleHTTPRequestHandler):
+    def do_GET(self):
+        # The viewer pings this every couple of seconds while it is open. The
+        # launcher watches the timestamp to know when the window has gone:
+        # waiting on the browser process does not work, because Edge hands off
+        # to another process and the one you started exits immediately.
+        if self.path == "/__alive":
+            self.server.last_ping = time.time()
+            self.send_response(204)
+            self.end_headers()
+            return
+        return super().do_GET()
+
     def end_headers(self):
         # The media files never change once downloaded; let the browser keep
         # them so a reload does not re-fetch 200 MB of thumbnails.
@@ -35,6 +48,22 @@ class Handler(SimpleHTTPRequestHandler):
     def log_message(self, fmt, *args):
         if "404" in (fmt % args):
             sys.stderr.write("404 %s\n" % self.path)
+
+
+class Server(ThreadingHTTPServer):
+    daemon_threads = True
+    # Without this the server will happily bind a port already being served,
+    # because Windows SO_REUSEADDR permits it.
+    allow_reuse_address = False
+
+    def handle_error(self, request, client_address):
+        # A browser dropping a connection as its window closes is routine, and
+        # a traceback per pending request is just noise.
+        exc = sys.exc_info()[1]
+        if isinstance(exc, (ConnectionResetError, ConnectionAbortedError,
+                            BrokenPipeError)):
+            return
+        super().handle_error(request, client_address)
 
 
 def in_use(port):
@@ -65,11 +94,26 @@ def make_server(port=None):
     """A started-but-not-serving server plus the URL to open."""
     port = port or free_port()
     handler = functools.partial(Handler, directory=ROOT)
-    # without this the server would happily bind a port already in use
-    ThreadingHTTPServer.allow_reuse_address = False
-    server = ThreadingHTTPServer(("127.0.0.1", port), handler)
-    server.daemon_threads = True
+    server = Server(("127.0.0.1", port), handler)
+    server.last_ping = 0.0
     return server, "http://localhost:%d%s" % (port, VIEWER)
+
+
+def wait_until_closed(server, startup=60.0, idle=8.0):
+    """Block until the viewer stops pinging.
+
+    `startup` allows for a cold browser start before the first ping; `idle` is
+    how long to keep serving after the last one, so a reload does not count as
+    the window closing."""
+    began = time.time()
+    while True:
+        time.sleep(1.0)
+        last = server.last_ping
+        if not last:
+            if time.time() - began > startup:
+                return "the viewer never connected"
+        elif time.time() - last > idle:
+            return "the viewer was closed"
 
 
 def main():

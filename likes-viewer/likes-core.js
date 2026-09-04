@@ -824,6 +824,12 @@
     });
   }
 
+  // Tell the launcher this window is still open, so it can shut the server
+  // down once it is closed. Served by tools/serve.py; harmless anywhere else.
+  setInterval(function () {
+    fetch('/__alive', { cache: 'no-store' }).catch(function () {});
+  }, 2000);
+
   global.XL = {
     state: state, filter: filter, url: url, load: load, adopt: adopt,
     thumb: thumb, cached: cached, cancelPending: cancelPending,
