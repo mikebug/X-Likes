@@ -536,7 +536,12 @@
       var n = nodes[i];
       if (!n.vis || n.post.kind === 'text') continue;
       if (n.x < v.x0 || n.x > v.x1 || n.y < v.y0 || n.y > v.y1) continue;
-      var img = imgs.get(n.post);
+      // once uploaded, the texture is all we need - the Image can be evicted
+      if (GL.hasDetail(n.post)) {
+        out.push({ index: i, tex: GL.detailTexture(n.post) });
+        continue;
+      }
+      var img = XL.cached(n.post);
       if (img) out.push({ index: i, tex: GL.detailTexture(n.post, img) });
       else requestThumb(n.post);
     }
@@ -652,7 +657,7 @@
       return;
     }
 
-    var img = n.post._thumb ? imgs.get(n.post) : null;
+    var img = XL.cached(n.post);
     // Nothing is fetched until the layout stops moving: during relaxation a
     // node's position is provisional, so fetching for wherever it happens to
     // sit that frame queues thousands of requests we may not want.
@@ -753,16 +758,15 @@
     dctx.textAlign = 'start';
   }
 
-  var imgs = new WeakMap();
   var requested = new Set();
   // collectDetail runs every frame, so without this guard a slow fetch would
   // stack up one callback per frame against the same post.
   function requestThumb(post) {
     if (requested.has(post.id)) return;
     requested.add(post.id);
-    XL.thumb(post, function (img) {
+    XL.thumb(post, function () {
       requested.delete(post.id);
-      if (img) { imgs.set(post, img); invalidate(); }
+      invalidate();
     });
   }
 
@@ -812,7 +816,7 @@
       var n = nodes[i];
       var want = n.vis ? 1 : DIM;
       if (Math.abs(n.a - want) > 0.004) { n.a += (want - n.a) * 0.16; live = true; }
-      if (n.post._thumb && imgs.get(n.post) && n.imgA < 1) {
+      if (n.imgA < 1 && n.post._thumb && XL.cached(n.post)) {
         n.imgA = Math.min(1, n.imgA + 0.09);
         live = true;
       }
@@ -1199,7 +1203,6 @@
     off.checked = XL.state.offline;
     off.onchange = function () {
       XL.setOffline(off.checked);
-      imgs = new WeakMap();
       nodes.forEach(function (n) { n.imgA = 0; });
       invalidate();
     };

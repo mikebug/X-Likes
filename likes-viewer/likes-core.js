@@ -285,10 +285,11 @@
   }
 
   function evict() {
+    // Drop the reference and let GC do the rest. Blanking the Image with
+    // src='' frees its memory sooner but corrupts it for anyone still holding
+    // it - the map kept drawing evicted images and they came out black.
     while (cache.size > CACHE_MAX) {
-      var k = cache.keys().next().value, img = cache.get(k);
-      cache.delete(k);
-      if (img) img.src = '';
+      cache.delete(cache.keys().next().value);
     }
   }
 
