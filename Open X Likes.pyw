@@ -1,17 +1,20 @@
-"""Double-click launcher for the viewer.
+"""Double-click launcher: opens the viewer as its own app window.
 
-Starts the local server, opens the browser, and leaves a small window behind so
-there is something to close when you are done. Saved as .pyw so Windows runs it
-through pythonw and no console appears.
+Starts the local server and hands the URL to Chrome or Edge in `--app` mode, so
+the viewer gets a plain window with no address bar or tabs and its own taskbar
+entry. When that window closes, the server stops and this exits. Saved as .pyw
+so Windows runs it through pythonw and no console appears.
 
-Only the standard library, so it works on any machine that can run the pipeline.
+Standard library only.
 """
 
 import json
 import os
+import shutil
+import subprocess
 import sys
 import threading
-import tkinter as tk
+import time
 import webbrowser
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -19,22 +22,46 @@ sys.path.insert(0, os.path.join(HERE, "tools"))
 
 from serve import make_server  # noqa: E402  (path set above)
 
-BG = "#111721"
-PANEL = "#182029"
-INK = "#e6edf3"
-DIM = "#8b98a5"
-ACCENT = "#6ea8fe"
+# A Chromium started against the *default* profile just tells the running copy
+# to open a window and exits immediately, which would take the server down with
+# it. Its own profile directory makes it a real, separate instance whose
+# lifetime matches the window - and it remembers size and position.
+def profile_dir():
+    base = (os.environ.get("LOCALAPPDATA")
+            or os.path.join(os.path.expanduser("~"), ".cache"))
+    return os.path.join(base, "x-likes-viewer")
+
+
+CHROMIUM = [
+    r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+    r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+    os.path.join(os.environ.get("LOCALAPPDATA", ""),
+                 r"Google\Chrome\Application\chrome.exe"),
+    r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+    r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+]
+
+
+def find_browser():
+    for path in CHROMIUM:
+        if path and os.path.exists(path):
+            return path
+    for name in ("google-chrome", "chromium", "chromium-browser",
+                 "microsoft-edge", "brave-browser"):
+        found = shutil.which(name)
+        if found:
+            return found
+    return None
 
 
 def archive_status():
-    """One line describing what has been built, so the window is worth reading."""
+    """One line describing what has been built."""
     likes = os.path.join(HERE, "likes.json")
     if not os.path.exists(likes):
         return "no likes.json yet - scrape first, then run the pipeline", False
     try:
         with open(likes, encoding="utf-8") as f:
-            n = len(json.load(f))
-        bits = ["{:,} posts".format(n)]
+            bits = ["{:,} posts".format(len(json.load(f)))]
     except Exception:
         bits = ["likes.json unreadable"]
     if os.path.exists(os.path.join(HERE, "labels.json")):
@@ -48,77 +75,77 @@ def archive_status():
     return " · ".join(bits), True
 
 
+def message(title, body):
+    """Only reason to draw any UI of our own: something is wrong."""
+    import tkinter as tk
+    root = tk.Tk()
+    root.title(title)
+    root.configure(bg="#111721")
+    root.resizable(False, False)
+    tk.Label(root, text=title, bg="#111721", fg="#e6edf3", padx=26, pady=(22, 4),
+             font=("Segoe UI", 12, "bold")).pack(anchor="w")
+    tk.Label(root, text=body, bg="#111721", fg="#8b98a5", padx=26, pady=(0, 22),
+             justify="left", font=("Segoe UI", 9)).pack(anchor="w")
+    root.update_idletasks()
+    root.geometry("+%d+%d" % ((root.winfo_screenwidth() - root.winfo_width()) // 2,
+                              (root.winfo_screenheight() - root.winfo_height()) // 3))
+    root.mainloop()
+
+
 def main():
+    status, ok = archive_status()
+    if not ok:
+        message("X Likes", status + "\n\nSee the README for the pipeline steps.")
+        return
+
     try:
         server, url = make_server()
     except OSError as e:
-        root = tk.Tk()
-        root.title("X Likes")
-        tk.Label(root, text="Could not start the server:\n%s" % e,
-                 padx=24, pady=24).pack()
-        root.mainloop()
+        message("X Likes", "Could not start the server:\n%s" % e)
+        return
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+
+    browser = find_browser()
+    if not browser:
+        # No Chromium anywhere: fall back to a normal tab, and stay alive so
+        # the server outlives this function.
+        webbrowser.open(url)
+        message("X Likes", status + "\n\nServing at " + url +
+                "\nClose this window to stop.")
+        server.shutdown()
         return
 
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    status, ok = archive_status()
-
-    root = tk.Tk()
-    root.title("X Likes")
-    root.configure(bg=BG)
-    root.resizable(False, False)
-
-    wrap = tk.Frame(root, bg=BG, padx=26, pady=22)
-    wrap.pack()
-
-    tk.Label(wrap, text="X LIKES", bg=BG, fg=INK,
-             font=("Segoe UI", 13, "bold")).pack(anchor="w")
-    tk.Label(wrap, text=status, bg=BG, fg=DIM if ok else "#e0a0a0",
-             font=("Segoe UI", 9)).pack(anchor="w", pady=(2, 14))
-
-    link = tk.Label(wrap, text=url, bg=BG, fg=ACCENT,
-                    font=("Consolas", 9), cursor="hand2")
-    link.pack(anchor="w")
-    link.bind("<Button-1>", lambda e: webbrowser.open(url))
-
-    row = tk.Frame(wrap, bg=BG)
-    row.pack(anchor="w", pady=(16, 0))
-
-    def button(parent, text, command, primary=False):
-        return tk.Button(
-            parent, text=text, command=command,
-            bg=ACCENT if primary else PANEL, fg="#0a0e14" if primary else INK,
-            activebackground=ACCENT if primary else "#222c38",
-            activeforeground="#0a0e14" if primary else INK,
-            relief="flat", borderwidth=0, padx=16, pady=6,
-            font=("Segoe UI", 9, "bold" if primary else "normal"),
-            cursor="hand2")
-
-    def quit_all():
-        # shutdown() has to come from a thread other than serve_forever's,
-        # which is exactly where we are
-        threading.Thread(target=server.shutdown, daemon=True).start()
-        root.destroy()
-
-    button(row, "Open viewer", lambda: webbrowser.open(url), True).pack(side="left")
-    button(row, "Stop", quit_all).pack(side="left", padx=(8, 0))
-
-    tk.Label(wrap, text="closing this window stops the server",
-             bg=BG, fg="#6b7785", font=("Segoe UI", 8)).pack(anchor="w", pady=(12, 0))
-
-    root.protocol("WM_DELETE_WINDOW", quit_all)
-
-    # centre on screen
-    root.update_idletasks()
-    x = (root.winfo_screenwidth() - root.winfo_width()) // 2
-    y = (root.winfo_screenheight() - root.winfo_height()) // 3
-    root.geometry("+%d+%d" % (x, y))
-
-    if not os.environ.get("XLIKES_NO_BROWSER"):
-        webbrowser.open(url)
+    cmd = [
+        browser,
+        "--app=" + url,
+        "--user-data-dir=" + profile_dir(),
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-features=Translate",
+    ]
     if os.environ.get("XLIKES_SELFTEST"):
-        root.after(int(os.environ["XLIKES_SELFTEST"]), quit_all)
+        cmd.append("--headless=new")
 
-    root.mainloop()
+    started = time.time()
+    try:
+        proc = subprocess.Popen(cmd)
+        if os.environ.get("XLIKES_SELFTEST"):
+            time.sleep(float(os.environ["XLIKES_SELFTEST"]))
+            proc.terminate()
+        proc.wait()
+    except Exception as e:
+        message("X Likes", "Could not open the app window:\n%s" % e)
+        server.shutdown()
+        return
+
+    # If it came straight back, the window is living inside another process and
+    # waiting on this one tells us nothing - keep serving and let the user say
+    # when to stop.
+    if time.time() - started < 3 and not os.environ.get("XLIKES_SELFTEST"):
+        message("X Likes", status + "\n\nServing at " + url +
+                "\nClose this window to stop.")
+
+    server.shutdown()
 
 
 if __name__ == "__main__":

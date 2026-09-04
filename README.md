@@ -110,10 +110,27 @@ up called "art".
 
 ## 3. View
 
-Double-click **`Open X Likes.pyw`**. It starts the server, opens the viewer in
-your browser, and leaves a small window showing what is loaded and a Stop
-button. No terminal, and nothing to install beyond what the pipeline already
-needs - it is stdlib Tkinter. Closing the window stops the server.
+Double-click **`Open X Likes.pyw`**. It starts the server and opens the viewer
+as its own app window - no address bar, no tabs, its own taskbar entry - by
+handing the URL to Chrome or Edge in `--app` mode. Closing that window stops the
+server and quits. No terminal, and nothing to install.
+
+For a Desktop and Start Menu shortcut with a proper icon:
+
+```
+python tools/make_shortcut.py --start
+```
+
+Then pin it to the taskbar and it behaves like any other app.
+
+A detail that matters: the app window runs against its own browser profile under
+`%LOCALAPPDATA%\x-likes-viewer`. Started against your normal profile, Chromium
+would just tell the already-running copy to open a window and exit immediately,
+taking the server down with it. The separate profile also means the window
+remembers its size and position.
+
+If no Chromium-based browser is found it falls back to a normal tab plus a small
+window to close when you are done.
 
 From a terminal instead:
 
