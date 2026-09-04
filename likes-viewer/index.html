@@ -1,0 +1,1285 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>X Likes — Topic Map</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="app">
+  <aside class="side">
+    <header>
+      <h1>X Likes</h1>
+      <div class="sub" id="sub">loading…</div>
+      <nav class="views">
+        <a href="index.html" class="on">Map</a>
+        <a href="grid.html" id="toGrid">Grid</a>
+      </nav>
+    </header>
+    <div class="scroll">
+      <input class="search" id="q" type="search" placeholder="Search text, tags, captions…">
+
+      <div class="group" id="lassoGroup" hidden>
+        <div class="lasso-chip">
+          <span id="lassoCount"></span>
+          <a href="grid.html" id="lassoGrid">view in grid</a>
+          <button id="lassoClear" title="Clear selection">&times;</button>
+        </div>
+      </div>
+
+      <div class="group">
+        <h2>When</h2>
+        <canvas class="timeline" id="timeline"></canvas>
+      </div>
+
+      <div class="group">
+        <h2>Media</h2>
+        <div class="chips" id="kinds"></div>
+      </div>
+
+      <div class="group" id="catGroup" hidden>
+        <h2>Categories <button data-clear="cats">clear</button></h2>
+        <div class="chips" id="cats"></div>
+      </div>
+
+      <div class="group">
+        <h2>Topics <button data-clear="clusters">clear</button></h2>
+        <div class="clist" id="clusters"></div>
+      </div>
+
+      <div class="group">
+        <h2>Tags <button data-clear="tags">clear</button></h2>
+        <div class="mode" id="tagMode">
+          <button data-m="and" class="on">all of</button>
+          <button data-m="or">any of</button>
+        </div>
+        <div class="chips" id="tags"></div>
+      </div>
+    </div>
+    <div class="foot">
+      <span id="count"></span>
+      <button class="linky" id="clearAll" hidden>clear all</button>
+      <label><input type="checkbox" id="offline"> offline</label>
+    </div>
+  </aside>
+
+  <main class="stage">
+    <canvas id="cv"></canvas>
+    <canvas id="ov"></canvas>
+    <div class="hud" id="hud">drag to pan · scroll to zoom · shift-drag to lasso</div>
+    <div class="zoombar">
+      <button id="lasso" title="Lasso select (or hold Shift)">◌</button>
+      <button id="zin" title="Zoom in">+</button>
+      <button id="zout" title="Zoom out">−</button>
+      <button id="fit" class="wide">fit</button>
+    </div>
+    <div class="loading" id="loading">
+      <div class="lstage" id="lstage">reading likes.json</div>
+      <div class="bar"><i id="prog"></i></div>
+      <div class="lsub" id="lsub"></div>
+    </div>
+  </main>
+</div>
+
+<script src="likes-core.js"></script>
+<script src="timeline.js"></script>
+<script src="mapgl.js"></script>
+<script>
+(function () {
+  'use strict';
+
+  var TAU = Math.PI * 2;
+  var SCALE = 1700;          // t-SNE units (-1..1) -> world pixels
+  var R = 16;                // node radius in world units
+  var DIM = 0.06;            // alpha of a filtered-out node
+  var THUMB_AT = 8;          // screen radius (px) at which images start
+
+  var canvas = document.getElementById('cv');
+  // WebGL2 draws the whole archive in one instanced call, so every post can
+  // show its picture at any zoom. ?nogl= forces the canvas 2D path, which is
+  // also what runs if the context cannot be created.
+  var GL = (window.XLGL && !/(^|[?&])nogl(&|=|$)/.test(location.search))
+    ? XLGL.create(canvas) : null;
+  var ctx = GL ? null : canvas.getContext('2d');
+  canvas.dataset.renderer = GL ? 'webgl2' : 'canvas2d';
+  var overlay = document.getElementById('ov');
+  var octx = overlay.getContext('2d');
+  var atlas = null;
+  var alphaBuf = null;
+  // Text drawing goes to the overlay under WebGL and straight to the main
+  // canvas otherwise; these three helpers are shared by both paths.
+  var dctx = null;
+  var view = { k: 0.35, x: 0, y: 0 };
+  var nodes = [], edges = [], labels = [], hulls = [];
+  var grid = null, hover = null, bloom = 0;
+  var dirty = true, settled = false, rafId = null;
+  var visibleOrder = [];
+  var timeline = null;
+  dctx = GL ? octx : ctx;
+
+  /* ------------------------------------------------------------ startup */
+
+  var stageNames = {
+    likes: 'reading likes.json',
+    graph: 'reading the topic graph',
+    labels: 'reading labels',
+    atlas: 'loading the texture atlas',
+    layout: 'arranging posts'
+  };
+
+  function onProgress(p) {
+    document.getElementById('lstage').textContent = stageNames[p.stage] || p.stage;
+    var bar = document.querySelector('.loading .bar');
+    var known = p.total > 1;
+    // Without a byte count the bar would sit at zero looking hung, so run it
+    // as an indeterminate sweep instead.
+    bar.classList.toggle('indet', !known);
+    document.getElementById('prog').style.width =
+      known ? Math.min(100, p.loaded / p.total * 100).toFixed(1) + '%' : '';
+    document.getElementById('lsub').textContent =
+      known ? (p.loaded / 1048576).toFixed(1) + ' / ' +
+              (p.total / 1048576).toFixed(1) + ' MB' : '';
+  }
+
+  XL.load(onProgress).then(function (state) {
+    if (!state.graph) return noGraph(state);
+    build(state);
+    buildSidebar(state);
+    return loadAtlas().then(function () { return state; });
+  }).then(function (state) {
+    if (!state || !state.graph) return;
+    onProgress({ stage: 'layout', loaded: 0, total: 0 });
+    relax(function () {
+      // Frame the camera before revealing, otherwise the first visible frame
+      // is the un-fitted default view.
+      indexGrid();
+      buildHulls();
+      if (GL) {
+        alphaBuf = new Float32Array(nodes.length);
+        GL.setNodes(nodes, atlas ? atlas.index : null,
+                    function (n) { return XL.clusterColor(n.c); });
+        GL.setEdges(edges, function (n) { return n.i; });
+      }
+      restoreView();
+      applyFilter();
+      settled = true;
+      render();
+      document.getElementById('loading').classList.add('hide');
+    });
+  }).catch(fail);
+
+  // One 4096px sheet instead of 3,325 requests. Without it the GL path still
+  // works, it just has no pictures, so a failure here is not fatal.
+  function loadAtlas() {
+    if (!GL) return Promise.resolve();
+    onProgress({ stage: 'atlas', loaded: 0, total: 1 });
+    return fetch(XL.state.media + '/atlas/atlas.json')
+      .then(function (r) {
+        if (!r.ok) throw new Error('no atlas');
+        return r.json();
+      })
+      .then(function (meta) {
+        return fetchImage(XL.state.media + '/atlas/' + meta.sheets[0])
+          .then(function (img) { GL.setAtlas(img, meta); atlas = meta; });
+      })
+      .catch(function () {
+        console.warn('no texture atlas - run tools/atlas.py');
+      });
+  }
+
+  // The sheet is the single biggest file the viewer loads, so stream it and
+  // report bytes rather than leaving the bar parked at zero.
+  function fetchImage(url) {
+    return fetch(url).then(function (r) {
+      if (!r.ok) throw new Error(r.status + ' ' + url);
+      var total = +(r.headers.get('Content-Length') || 0);
+      if (!r.body || !total || !r.body.getReader) return r.blob().then(toImage);
+      var reader = r.body.getReader(), chunks = [], loaded = 0;
+      return (function pump() {
+        return reader.read().then(function (res) {
+          if (res.done) return toImage(new Blob(chunks, { type: 'image/jpeg' }));
+          chunks.push(res.value);
+          loaded += res.value.length;
+          onProgress({ stage: 'atlas', loaded: loaded, total: total });
+          return pump();
+        });
+      })();
+    });
+  }
+
+  function toImage(blob) {
+    return new Promise(function (res, rej) {
+      var src = URL.createObjectURL(blob);
+      var img = new Image();
+      img.onload = function () { URL.revokeObjectURL(src); res(img); };
+      img.onerror = function (e) { URL.revokeObjectURL(src); rej(e); };
+      img.src = src;
+    });
+  }
+
+  function fail(e) {
+    document.getElementById('loading').innerHTML =
+      '<div class="lstage">could not load the archive</div>' +
+      '<div class="lsub">' + esc(e.message) + '<br><br>' +
+      'Serve the project folder, then open <code>/likes-viewer/</code>:<br>' +
+      '<code>python tools/serve.py</code></div>';
+  }
+
+  function noGraph(state) {
+    // No analysis pass yet: fall back to a date spiral so the archive is at
+    // least browsable, and say exactly what is missing.
+    state.posts.forEach(function (p, i) {
+      var a = i * 0.42, rad = 9 * Math.sqrt(i);
+      nodes.push(node(p, Math.cos(a) * rad / SCALE, Math.sin(a) * rad / SCALE, -1));
+    });
+    buildSidebar(state);
+    document.getElementById('loading').classList.add('hide');
+    document.getElementById('sub').textContent =
+      state.posts.length + ' posts · no graph.json (run tools/embed.py + cluster.py)';
+    indexGrid();
+    settled = true;
+    fit(0);
+    applyFilter();
+  }
+
+  function node(post, x, y, c) {
+    return { post: post, i: 0, x: x * SCALE, y: y * SCALE,
+             ax: x * SCALE, ay: y * SCALE,
+             r: R, c: c, vis: true, a: 1, imgA: 0 };
+  }
+
+  function build(state) {
+    state.nodes.forEach(function (n) { nodes.push(node(n.post, n.x, n.y, n.c)); });
+    var byId = {};
+    nodes.forEach(function (n) { byId[n.post.id] = n; });
+    state.edges.forEach(function (e) {
+      var a = state.graph.nodes[e.s], b = state.graph.nodes[e.t];
+      if (!a || !b) return;
+      var na = byId[a.id], nb = byId[b.id];
+      if (na && nb) edges.push({ a: na, b: nb, w: e.w });
+    });
+    nodes.forEach(function (n, i) { n.i = i; });
+    document.getElementById('sub').textContent =
+      XL.fmtCount(state.posts.length) + ' posts · ' + state.clusters.length +
+      ' topics · ' + XL.fmtCount(edges.length) + ' links';
+  }
+
+  /* ------------------------------------------------- collision relaxation */
+
+  // t-SNE gives good relative placement but overlapping points. Push the
+  // circles apart while holding each near its anchor, so topics stay put.
+  function relax(done) {
+    var cell = R * 2.2, steps = 150, step = 0;
+    var bar = document.getElementById('prog');
+
+    function pass() {
+      var map = new Map();
+      nodes.forEach(function (n) {
+        var k = Math.floor(n.x / cell) + ',' + Math.floor(n.y / cell);
+        var b = map.get(k);
+        if (b) b.push(n); else map.set(k, [n]);
+      });
+      nodes.forEach(function (n) {
+        var cx = Math.floor(n.x / cell), cy = Math.floor(n.y / cell);
+        for (var dx = -1; dx <= 1; dx++) {
+          for (var dy = -1; dy <= 1; dy++) {
+            var b = map.get((cx + dx) + ',' + (cy + dy));
+            if (!b) continue;
+            for (var i = 0; i < b.length; i++) {
+              var m = b[i];
+              if (m === n) continue;
+              var ux = m.x - n.x, uy = m.y - n.y;
+              var d2 = ux * ux + uy * uy, min = n.r + m.r + 1.5;
+              if (d2 >= min * min || d2 === 0) continue;
+              var d = Math.sqrt(d2), push = (min - d) / d * 0.5;
+              n.x -= ux * push; n.y -= uy * push;
+              m.x += ux * push; m.y += uy * push;
+            }
+          }
+        }
+        n.x += (n.ax - n.x) * 0.045;
+        n.y += (n.ay - n.y) * 0.045;
+      });
+    }
+
+    function chunk() {
+      var t0 = performance.now();
+      while (step < steps && performance.now() - t0 < 28) { pass(); step++; }
+      bar.style.width = Math.round(step / steps * 100) + '%';
+      document.getElementById('lsub').textContent =
+        XL.fmtCount(nodes.length) + ' posts';
+      if (step < steps) requestAnimationFrame(chunk);
+      else { centroids(); done(); }
+    }
+    requestAnimationFrame(chunk);
+  }
+
+  function centroids() {
+    var acc = {};
+    nodes.forEach(function (n) {
+      if (n.c < 0) return;
+      var a = acc[n.c] || (acc[n.c] = { x: 0, y: 0, n: 0 });
+      a.x += n.x; a.y += n.y; a.n++;
+    });
+    labels = XL.state.clusters.filter(function (c) { return acc[c.id]; })
+      .map(function (c) {
+        var a = acc[c.id];
+        return { name: c.name, id: c.id, x: a.x / a.n, y: a.y / a.n, n: a.n };
+      });
+  }
+
+  /* ----------------------------------------------------------- hull layer */
+
+  function convexHull(pts) {
+    var p = pts.slice().sort(function (a, b) { return a[0] - b[0] || a[1] - b[1]; });
+    var cross = function (o, a, b) {
+      return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+    };
+    var lower = [], upper = [], i;
+    for (i = 0; i < p.length; i++) {
+      while (lower.length >= 2 &&
+             cross(lower[lower.length - 2], lower[lower.length - 1], p[i]) <= 0) lower.pop();
+      lower.push(p[i]);
+    }
+    for (i = p.length - 1; i >= 0; i--) {
+      while (upper.length >= 2 &&
+             cross(upper[upper.length - 2], upper[upper.length - 1], p[i]) <= 0) upper.pop();
+      upper.push(p[i]);
+    }
+    lower.pop(); upper.pop();
+    return lower.concat(upper);
+  }
+
+  // Closed Catmull-Rom through the hull points, converted to beziers, so the
+  // blob reads as an organic region rather than a polygon.
+  function smooth(pts) {
+    var path = new Path2D(), n = pts.length;
+    if (n < 3) return path;
+    path.moveTo(pts[0][0], pts[0][1]);
+    for (var i = 0; i < n; i++) {
+      var p0 = pts[(i - 1 + n) % n], p1 = pts[i];
+      var p2 = pts[(i + 1) % n], p3 = pts[(i + 2) % n];
+      path.bezierCurveTo(
+        p1[0] + (p2[0] - p0[0]) / 6, p1[1] + (p2[1] - p0[1]) / 6,
+        p2[0] - (p3[0] - p1[0]) / 6, p2[1] - (p3[1] - p1[1]) / 6,
+        p2[0], p2[1]);
+    }
+    path.closePath();
+    return path;
+  }
+
+  function buildHulls() {
+    hulls = [];
+    var groups = {};
+    nodes.forEach(function (n) {
+      if (n.c < 0) return;
+      (groups[n.c] || (groups[n.c] = [])).push(n);
+    });
+    Object.keys(groups).forEach(function (key) {
+      var members = groups[key];
+      if (members.length < 3) return;
+      var cx = 0, cy = 0;
+      members.forEach(function (n) { cx += n.x; cy += n.y; });
+      cx /= members.length; cy /= members.length;
+
+      // t-SNE scatters a few members of every cluster right across the map. A
+      // convex hull over all of them spans the whole canvas, and 24 such blobs
+      // overlap into grey haze - so hull only the dense core.
+      var pts = members.map(function (n) {
+        return { p: [n.x, n.y], d: Math.hypot(n.x - cx, n.y - cy) };
+      }).sort(function (a, b) { return a.d - b.d; });
+      var core = pts.slice(0, Math.max(3, Math.ceil(pts.length * 0.82)))
+                    .map(function (o) { return o.p; });
+
+      var hull = convexHull(core);
+      if (hull.length < 3) return;
+      var pad = R * 2.4, rad = 0;
+      var grown = hull.map(function (p) {
+        var dx = p[0] - cx, dy = p[1] - cy, d = Math.hypot(dx, dy) || 1;
+        var q = [p[0] + dx / d * pad, p[1] + dy / d * pad];
+        rad = Math.max(rad, Math.hypot(q[0] - cx, q[1] - cy));
+        return q;
+      });
+
+      var base = XL.clusterColor(+key);
+      var hull_ = { c: +key, css: base, count: members.length,
+                    cx: cx, cy: cy, pts: sampleSmooth(grown) };
+      if (!GL) {
+        var grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, rad);
+        grad.addColorStop(0, alpha(base, 0.13));
+        grad.addColorStop(0.6, alpha(base, 0.05));
+        grad.addColorStop(1, alpha(base, 0));
+        hull_.path = smooth(grown);
+        hull_.grad = grad;
+      }
+      hulls.push(hull_);
+    });
+    if (GL) GL.setHulls(hulls);
+  }
+
+  // The GL path needs the blob as an actual polygon rather than beziers, so
+  // walk the same Catmull-Rom curve and keep the points.
+  function sampleSmooth(pts, per) {
+    var n = pts.length, out = [], steps = per || 8;
+    for (var i = 0; i < n; i++) {
+      var p0 = pts[(i - 1 + n) % n], p1 = pts[i];
+      var p2 = pts[(i + 1) % n], p3 = pts[(i + 2) % n];
+      for (var s = 0; s < steps; s++) {
+        var t = s / steps, t2 = t * t, t3 = t2 * t;
+        out.push([
+          0.5 * ((2 * p1[0]) + (-p0[0] + p2[0]) * t +
+                 (2 * p0[0] - 5 * p1[0] + 4 * p2[0] - p3[0]) * t2 +
+                 (-p0[0] + 3 * p1[0] - 3 * p2[0] + p3[0]) * t3),
+          0.5 * ((2 * p1[1]) + (-p0[1] + p2[1]) * t +
+                 (2 * p0[1] - 5 * p1[1] + 4 * p2[1] - p3[1]) * t2 +
+                 (-p0[1] + 3 * p1[1] - 3 * p2[1] + p3[1]) * t3)
+        ]);
+      }
+    }
+    return out;
+  }
+
+  // 'hsl(h 65% 56%)' -> 'hsl(h 65% 56% / a)', so the hull tint always tracks
+  // whatever clusterColor() decides.
+  function alpha(color, a) { return color.replace(')', ' / ' + a + ')'); }
+
+  /* ---------------------------------------------------------- spatial index */
+
+  function indexGrid() {
+    var cell = 90, map = new Map();
+    nodes.forEach(function (n) {
+      var k = Math.floor(n.x / cell) + ',' + Math.floor(n.y / cell);
+      var b = map.get(k);
+      if (b) b.push(n); else map.set(k, [n]);
+    });
+    grid = { cell: cell, map: map };
+  }
+
+  function pick(wx, wy) {
+    if (!grid) return null;
+    var cx = Math.floor(wx / grid.cell), cy = Math.floor(wy / grid.cell);
+    var best = null, bestD = Infinity;
+    for (var dx = -1; dx <= 1; dx++) {
+      for (var dy = -1; dy <= 1; dy++) {
+        var b = grid.map.get((cx + dx) + ',' + (cy + dy));
+        if (!b) continue;
+        for (var i = 0; i < b.length; i++) {
+          var n = b[i];
+          if (!n.vis) continue;
+          var d = (n.x - wx) * (n.x - wx) + (n.y - wy) * (n.y - wy);
+          if (d < n.r * n.r && d < bestD) { bestD = d; best = n; }
+        }
+      }
+    }
+    return best;
+  }
+
+  /* ------------------------------------------------------------ rendering */
+
+  function resize() {
+    var dpr = Math.min(window.devicePixelRatio || 1, 2);
+    var w = canvas.clientWidth, h = canvas.clientHeight;
+    if (GL) {
+      GL.resize(w, h, dpr);
+    } else {
+      canvas.width = w * dpr;
+      canvas.height = h * dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    }
+    overlay.width = w * dpr;
+    overlay.height = h * dpr;
+    octx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    invalidate();
+  }
+
+  function toWorld(px, py) {
+    return { x: (px - view.x) / view.k, y: (py - view.y) / view.k };
+  }
+
+  function render() {
+    if (GL) return renderGL();
+    return render2D();
+  }
+
+  function viewport(pad) {
+    var w = canvas.clientWidth, h = canvas.clientHeight, k = view.k;
+    var m = (pad || 60) / k;
+    return { w: w, h: h, k: k,
+             x0: -view.x / k - m, y0: -view.y / k - m,
+             x1: (w - view.x) / k + m, y1: (h - view.y) / k + m };
+  }
+
+  function renderGL() {
+    var v = viewport();
+    pushAlpha();
+    GL.draw(view, { dpr: Math.min(window.devicePixelRatio || 1, 2),
+                    detail: collectDetail(v) });
+    drawOverlay(v);
+  }
+
+  // Alpha animates every frame, so it is simplest to keep the GPU copy in step
+  // here rather than at every place that can change it.
+  function pushAlpha() {
+    if (!GL || !alphaBuf) return;
+    for (var i = 0; i < nodes.length; i++) alphaBuf[i] = nodes[i].a;
+    GL.setAlpha(alphaBuf);
+    GL.refreshEdges(alphaBuf, hover ? hover.i : -1);
+  }
+
+  // The atlas tile is 64px; anything drawn much larger than that gets its own
+  // texture from the full thumbnail.
+  function collectDetail(v) {
+    var out = [];
+    if (!GL || R * v.k < 40) return out;
+    for (var i = 0; i < nodes.length && out.length < 24; i++) {
+      var n = nodes[i];
+      if (!n.vis || n.post.kind === 'text') continue;
+      if (n.x < v.x0 || n.x > v.x1 || n.y < v.y0 || n.y > v.y1) continue;
+      var img = imgs.get(n.post);
+      if (img) out.push({ index: i, tex: GL.detailTexture(n.post, img) });
+      else requestThumb(n.post);
+    }
+    return out;
+  }
+
+  // Text is the one thing the shaders cannot do, so labels, text-post snippets
+  // and the lasso live on a 2D canvas stacked above the GL one.
+  function drawOverlay(v) {
+    octx.clearRect(0, 0, v.w, v.h);
+    octx.save();
+    octx.translate(view.x, view.y);
+    octx.scale(v.k, v.k);
+    var screenR = R * v.k;
+    if (screenR > 22) {
+      for (var i = 0; i < nodes.length; i++) {
+        var n = nodes[i];
+        if (!n.vis || n.post.kind !== 'text') continue;
+        if (n.x < v.x0 || n.x > v.x1 || n.y < v.y0 || n.y > v.y1) continue;
+        octx.globalAlpha = n.a;
+        snippet(n, n.r);
+      }
+      octx.globalAlpha = 1;
+    }
+    if (labels.length && v.k < 1.4) drawLabels(v.k);
+    if (lassoPath.length > 1) drawLasso(v.k);
+    octx.restore();
+  }
+
+  function render2D() {
+    var w = canvas.clientWidth, h = canvas.clientHeight, k = view.k;
+    ctx.save();
+    ctx.clearRect(0, 0, w, h);
+    ctx.fillStyle = '#0a0e14';
+    ctx.fillRect(0, 0, w, h);
+    ctx.translate(view.x, view.y);
+    ctx.scale(k, k);
+
+    var pad = 60 / k;
+    var x0 = -view.x / k - pad, y0 = -view.y / k - pad;
+    var x1 = (w - view.x) / k + pad, y1 = (h - view.y) / k + pad;
+
+    drawHulls();
+    drawEdges(k, x0, y0, x1, y1);
+
+    var screenR = R * k, wants = [], budget = 48;
+    for (var j = 0; j < nodes.length; j++) {
+      var n = nodes[j];
+      if (n.x < x0 || n.x > x1 || n.y < y0 || n.y > y1) continue;
+      drawNode(n, screenR, wants, budget);
+    }
+    for (var q = 0; q < wants.length && q < budget; q++) requestThumb(wants[q]);
+
+    if (labels.length && k < 1.4) drawLabels(k);
+    if (lassoPath.length > 1) drawLasso(k);
+    ctx.restore();
+  }
+
+  function drawHulls() {
+    for (var i = 0; i < hulls.length; i++) {
+      var hl = hulls[i];
+      if (hl.visible === 0) continue;
+      ctx.globalAlpha = hl.visible === undefined ? 1
+        : 0.15 + 0.85 * (hl.visible / hl.count);
+      ctx.fillStyle = hl.grad;
+      ctx.fill(hl.path);
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  // Additive blending so overlapping links accumulate brightness like stars
+  // instead of muddying into grey.
+  function drawEdges(k, x0, y0, x1, y1) {
+    if (k <= 0.28) return;
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.lineWidth = 1 / k;
+    var base = Math.min(0.45, (k - 0.28) * 0.85);
+    for (var i = 0; i < edges.length; i++) {
+      var e = edges[i];
+      if (!e.a.vis || !e.b.vis) continue;
+      if (e.a.x < x0 && e.b.x < x0) continue;
+      if (e.a.x > x1 && e.b.x > x1) continue;
+      if (e.a.y < y0 && e.b.y < y0) continue;
+      if (e.a.y > y1 && e.b.y > y1) continue;
+      var strong = hover && (e.a === hover || e.b === hover);
+      ctx.strokeStyle = strong
+        ? 'rgba(140,190,255,.9)'
+        : 'rgba(90,120,170,' + (base * (e.w - 0.55) * 2).toFixed(3) + ')';
+      ctx.beginPath();
+      ctx.moveTo(e.a.x, e.a.y);
+      ctx.lineTo(e.b.x, e.b.y);
+      ctx.stroke();
+    }
+    ctx.globalCompositeOperation = 'source-over';
+  }
+
+  function drawNode(n, screenR, wants, budget) {
+    var color = n.c >= 0 ? XL.clusterColor(n.c) : '#4a5561';
+    var isHover = n === hover;
+    var r = n.r * (1 + 0.12 * (isHover ? bloom : 0));
+    ctx.globalAlpha = n.a;
+
+    // Zoomed out, a thumbnail is a handful of unreadable pixels. Draw a solid
+    // point in the cluster colour instead: the archive reads as a constellation
+    // of topics, and nothing is fetched until a picture would actually be
+    // legible.
+    if (screenR < THUMB_AT) {
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.arc(n.x, n.y, n.r * 0.82, 0, TAU);
+      ctx.fill();
+      ctx.globalAlpha = 1;
+      return;
+    }
+
+    var img = n.post._thumb ? imgs.get(n.post) : null;
+    // Nothing is fetched until the layout stops moving: during relaxation a
+    // node's position is provisional, so fetching for wherever it happens to
+    // sit that frame queues thousands of requests we may not want.
+    if (settled && !img && n.post.kind !== 'text' && n.post._thumb !== null &&
+        n.vis && wants.length < budget) wants.push(n.post);
+
+    if (isHover && bloom > 0.01) {
+      ctx.globalAlpha = n.a * bloom * 0.5;
+      ctx.fillStyle = alpha(color, 0.5);
+      ctx.beginPath();
+      ctx.arc(n.x, n.y, r * 1.5, 0, TAU);
+      ctx.fill();
+      ctx.globalAlpha = n.a;
+    }
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(n.x, n.y, r, 0, TAU);
+    ctx.closePath();
+    ctx.clip();
+    if (img) {
+      ctx.globalAlpha = n.a * n.imgA;
+      var s = Math.max(r * 2 / img.width, r * 2 / img.height);
+      ctx.drawImage(img, n.x - img.width * s / 2, n.y - img.height * s / 2,
+                    img.width * s, img.height * s);
+      ctx.globalAlpha = n.a;
+    } else if (n.post.kind === 'text') {
+      ctx.fillStyle = '#141c26';
+      ctx.fill();
+      if (screenR > 22) snippet(n, r);
+    } else {
+      // Tinted rather than near-black, so a not-yet-loaded post still reads as
+      // part of its topic instead of a hollow ring.
+      ctx.fillStyle = alpha(color, 0.28);
+      ctx.fill();
+    }
+    ctx.restore();
+
+    ctx.lineWidth = (isHover ? 2.5 : 1.1) / view.k;
+    ctx.strokeStyle = isHover ? '#9ccbff' : color;
+    ctx.globalAlpha = isHover ? n.a : n.a * 0.7;
+    ctx.beginPath();
+    ctx.arc(n.x, n.y, r, 0, TAU);
+    ctx.stroke();
+
+    if (n.post.kind === 'video' && screenR > 9) {
+      ctx.globalAlpha = n.a;
+      ctx.fillStyle = 'rgba(0,0,0,.55)';
+      ctx.beginPath();
+      ctx.arc(n.x, n.y, r * 0.3, 0, TAU);
+      ctx.fill();
+      ctx.fillStyle = '#fff';
+      ctx.beginPath();
+      ctx.moveTo(n.x - r * 0.1, n.y - r * 0.15);
+      ctx.lineTo(n.x + r * 0.16, n.y);
+      ctx.lineTo(n.x - r * 0.1, n.y + r * 0.15);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  function snippet(n, r) {
+    var words = (n.post.text || '').split(/\s+/), line = '', out = [];
+    dctx.font = (r * 0.26) + 'px "Segoe UI", system-ui, sans-serif';
+    for (var i = 0; i < words.length && out.length < 3; i++) {
+      var t = line ? line + ' ' + words[i] : words[i];
+      if (dctx.measureText(t).width > r * 1.6 && line) { out.push(line); line = words[i]; }
+      else line = t;
+    }
+    if (out.length < 3 && line) out.push(line);
+    dctx.fillStyle = '#c6d2de';
+    dctx.textAlign = 'center';
+    dctx.textBaseline = 'middle';
+    var lh = r * 0.32, y = n.y - (out.length - 1) * lh / 2;
+    out.forEach(function (l, i) { dctx.fillText(l, n.x, y + i * lh); });
+    dctx.textAlign = 'start';
+    dctx.textBaseline = 'alphabetic';
+  }
+
+  function drawLabels(k) {
+    var size = Math.max(11, 14 / k);
+    dctx.font = '600 ' + size + 'px "Segoe UI", system-ui, sans-serif';
+    dctx.textAlign = 'center';
+    var a = Math.min(1, (1.4 - k) * 1.6);
+    labels.forEach(function (l) {
+      var c = XL.state.clusters[l.id];
+      var hidden = XL.filter.clusters.length &&
+                   XL.filter.clusters.indexOf(l.id) === -1;
+      dctx.globalAlpha = a * (hidden ? 0.18 : 1);
+      dctx.lineWidth = 5 / k;
+      dctx.strokeStyle = 'rgba(4,7,12,.92)';
+      dctx.lineJoin = 'round';
+      dctx.strokeText(l.name, l.x, l.y);
+      dctx.fillStyle = c ? alpha(XL.clusterColor(l.id), 0.95) : '#e6edf3';
+      dctx.fillText(l.name, l.x, l.y);
+    });
+    dctx.globalAlpha = 1;
+    dctx.textAlign = 'start';
+  }
+
+  var imgs = new WeakMap();
+  var requested = new Set();
+  // collectDetail runs every frame, so without this guard a slow fetch would
+  // stack up one callback per frame against the same post.
+  function requestThumb(post) {
+    if (requested.has(post.id)) return;
+    requested.add(post.id);
+    XL.thumb(post, function (img) {
+      requested.delete(post.id);
+      if (img) { imgs.set(post, img); invalidate(); }
+    });
+  }
+
+  /* ------------------------------------------------------------ animation */
+
+  var cam = null;   // {from, to, t0, dur}
+
+  function easeInOut(t) {
+    return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+  }
+
+  function animateTo(k, x, y, dur) {
+    if (dur === 0) { view.k = k; view.x = x; view.y = y; invalidate(); return; }
+    cam = { from: { k: view.k, x: view.x, y: view.y }, to: { k: k, x: x, y: y },
+            t0: performance.now(), dur: dur || 520 };
+    invalidate();
+  }
+
+  // Render on demand. A static map should not hold a 60fps loop open; the
+  // loop only keeps running while something is actually animating.
+  function invalidate() {
+    dirty = true;
+    if (rafId === null) rafId = requestAnimationFrame(frame);
+  }
+
+  function frame(now) {
+    rafId = null;
+    var live = false;
+
+    if (cam) {
+      var t = Math.min(1, (now - cam.t0) / cam.dur), e = easeInOut(t);
+      view.k = cam.from.k + (cam.to.k - cam.from.k) * e;
+      view.x = cam.from.x + (cam.to.x - cam.from.x) * e;
+      view.y = cam.from.y + (cam.to.y - cam.from.y) * e;
+      if (t >= 1) { cam = null; writeCamera(); }
+      live = true;
+    }
+
+    var target = hover ? 1 : 0;
+    if (Math.abs(bloom - target) > 0.01) {
+      bloom += (target - bloom) * 0.22;
+      live = true;
+    }
+
+    // Fade filtered nodes and newly decoded thumbnails rather than snapping.
+    for (var i = 0; i < nodes.length; i++) {
+      var n = nodes[i];
+      var want = n.vis ? 1 : DIM;
+      if (Math.abs(n.a - want) > 0.004) { n.a += (want - n.a) * 0.16; live = true; }
+      if (n.post._thumb && imgs.get(n.post) && n.imgA < 1) {
+        n.imgA = Math.min(1, n.imgA + 0.09);
+        live = true;
+      }
+    }
+
+    if (dirty || live) { dirty = false; render(); }
+    if (live && rafId === null) rafId = requestAnimationFrame(frame);
+  }
+
+  /* ---------------------------------------------------------- interaction */
+
+  var drag = null, lassoMode = false, lassoPath = [];
+
+  function lassoActive(e) { return lassoMode || (e && e.shiftKey); }
+
+  // Pointer capture is best-effort: it throws for a pointer the browser does
+  // not consider active, and an exception here would kill the whole handler -
+  // taking clicks and lasso selection with it.
+  function capture(e) {
+    try { canvas.setPointerCapture(e.pointerId); } catch (err) { /* not fatal */ }
+  }
+  function release(e) {
+    try { canvas.releasePointerCapture(e.pointerId); } catch (err) { /* not fatal */ }
+  }
+
+  canvas.addEventListener('pointerdown', function (e) {
+    capture(e);
+    var r = canvas.getBoundingClientRect();
+    if (lassoActive(e)) {
+      var w = toWorld(e.clientX - r.left, e.clientY - r.top);
+      lassoPath = [[w.x, w.y]];
+      invalidate();
+      return;
+    }
+    drag = { x: e.clientX, y: e.clientY, vx: view.x, vy: view.y, moved: 0 };
+    canvas.classList.add('dragging');
+  });
+
+  canvas.addEventListener('pointermove', function (e) {
+    var r = canvas.getBoundingClientRect();
+    if (lassoPath.length) {
+      var w = toWorld(e.clientX - r.left, e.clientY - r.top);
+      lassoPath.push([w.x, w.y]);
+      invalidate();
+      return;
+    }
+    if (drag) {
+      drag.moved += Math.abs(e.clientX - drag.x) + Math.abs(e.clientY - drag.y);
+      view.x = drag.vx + (e.clientX - drag.x);
+      view.y = drag.vy + (e.clientY - drag.y);
+      invalidate();
+      return;
+    }
+    var wpt = toWorld(e.clientX - r.left, e.clientY - r.top);
+    var n = pick(wpt.x, wpt.y);
+    if (n !== hover) {
+      hover = n;
+      invalidate();
+      tip(n, e.clientX - r.left, e.clientY - r.top);
+    }
+  });
+
+  canvas.addEventListener('pointerup', function (e) {
+    release(e);
+    canvas.classList.remove('dragging');
+    if (lassoPath.length) {
+      commitLasso();
+      return;
+    }
+    var wasDrag = drag && drag.moved > 5;
+    drag = null;
+    if (wasDrag) { writeCamera(); return; }
+    var r = canvas.getBoundingClientRect();
+    var w = toWorld(e.clientX - r.left, e.clientY - r.top);
+    var n = pick(w.x, w.y);
+    if (n) openPost(n.post);
+  });
+
+  canvas.addEventListener('pointerleave', function () {
+    hover = null; tip(null); invalidate();
+  });
+
+  canvas.addEventListener('wheel', function (e) {
+    e.preventDefault();
+    var r = canvas.getBoundingClientRect();
+    zoomAt(e.clientX - r.left, e.clientY - r.top, Math.pow(1.0016, -e.deltaY));
+  }, { passive: false });
+
+  function zoomAt(px, py, factor) {
+    cam = null;
+    var k = Math.min(6, Math.max(0.08, view.k * factor));
+    var f = k / view.k;
+    view.x = px - (px - view.x) * f;
+    view.y = py - (py - view.y) * f;
+    view.k = k;
+    invalidate();
+    writeCamera();
+  }
+
+  var camTimer = null;
+  function writeCamera() {
+    clearTimeout(camTimer);
+    camTimer = setTimeout(function () {
+      XL.url.write({ camera: view.k.toFixed(3) + ',' +
+                             Math.round(view.x) + ',' + Math.round(view.y) });
+    }, 260);
+  }
+
+  function restoreView() {
+    var c = XL.state.restore.camera;
+    if (c) {
+      var p = c.split(',').map(Number);
+      if (p.length === 3 && p.every(isFinite)) {
+        view.k = p[0]; view.x = p[1]; view.y = p[2];
+        invalidate();
+      } else fit(0);
+    } else fit(0);
+
+    var id = XL.state.restore.post;
+    if (id && XL.state.byId[id]) openPost(XL.state.byId[id]);
+  }
+
+  function bounds(list) {
+    var b = { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity };
+    list.forEach(function (n) {
+      if (n.x < b.x0) b.x0 = n.x;
+      if (n.x > b.x1) b.x1 = n.x;
+      if (n.y < b.y0) b.y0 = n.y;
+      if (n.y > b.y1) b.y1 = n.y;
+    });
+    return b;
+  }
+
+  function frameOn(list, maxK, dur) {
+    if (!list.length) return;
+    var b = bounds(list), w = canvas.clientWidth, h = canvas.clientHeight, m = 70;
+    var k = Math.min(maxK, (w - m) / (b.x1 - b.x0 + R * 4),
+                     (h - m) / (b.y1 - b.y0 + R * 4));
+    animateTo(k, w / 2 - (b.x0 + b.x1) / 2 * k, h / 2 - (b.y0 + b.y1) / 2 * k, dur);
+  }
+
+  function fit(dur) { frameOn(nodes, 2, dur); }
+
+  document.getElementById('zin').onclick = function () {
+    zoomAt(canvas.clientWidth / 2, canvas.clientHeight / 2, 1.4);
+  };
+  document.getElementById('zout').onclick = function () {
+    zoomAt(canvas.clientWidth / 2, canvas.clientHeight / 2, 1 / 1.4);
+  };
+  document.getElementById('fit').onclick = function () { fit(); };
+
+  var lassoBtn = document.getElementById('lasso');
+  lassoBtn.onclick = function () {
+    lassoMode = !lassoMode;
+    lassoBtn.classList.toggle('on', lassoMode);
+    canvas.classList.toggle('lassoing', lassoMode);
+  };
+
+  /* --------------------------------------------------------------- lasso */
+
+  function drawLasso(k) {
+    dctx.save();
+    dctx.lineWidth = 1.5 / k;
+    dctx.setLineDash([6 / k, 5 / k]);
+    dctx.strokeStyle = '#9ccbff';
+    dctx.fillStyle = 'rgba(110,168,254,.09)';
+    dctx.beginPath();
+    dctx.moveTo(lassoPath[0][0], lassoPath[0][1]);
+    for (var i = 1; i < lassoPath.length; i++) {
+      dctx.lineTo(lassoPath[i][0], lassoPath[i][1]);
+    }
+    dctx.closePath();
+    dctx.fill();
+    dctx.stroke();
+    dctx.restore();
+  }
+
+  function inside(poly, x, y) {
+    var hit = false;
+    for (var i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+      var xi = poly[i][0], yi = poly[i][1], xj = poly[j][0], yj = poly[j][1];
+      if ((yi > y) !== (yj > y) &&
+          x < (xj - xi) * (y - yi) / (yj - yi) + xi) hit = !hit;
+    }
+    return hit;
+  }
+
+  function commitLasso() {
+    var poly = lassoPath;
+    lassoPath = [];
+    invalidate();
+    if (poly.length < 3) return;
+    var ids = [];
+    nodes.forEach(function (n) {
+      if (inside(poly, n.x, n.y)) ids.push(n.post.id);
+    });
+    if (!ids.length) return;
+    XL.setLasso(ids);
+    lassoMode = false;
+    lassoBtn.classList.remove('on');
+    canvas.classList.remove('lassoing');
+    applyFilter();
+  }
+
+  function syncLasso() {
+    var g = document.getElementById('lassoGroup');
+    var on = !!XL.filter.lasso;
+    g.hidden = !on;
+    if (on) {
+      document.getElementById('lassoCount').textContent =
+        XL.fmtCount(XL.filter.lasso.size) + ' selected';
+    }
+  }
+
+  document.getElementById('lassoClear').onclick = function () {
+    XL.setLasso(null);
+    applyFilter();
+  };
+
+  // Resolved on click, not on render: the hash is written on a debounce, so a
+  // href built during applyFilter would still be missing the selection key.
+  document.getElementById('lassoGrid').onclick = function (e) {
+    e.preventDefault();
+    location.href = XL.url.link('grid.html');
+  };
+
+  /* -------------------------------------------------------------- tooltip */
+
+  var tipEl = null;
+  function tip(n, px, py) {
+    if (!n) { if (tipEl) { tipEl.remove(); tipEl = null; } return; }
+    if (!tipEl) {
+      tipEl = document.createElement('div');
+      tipEl.className = 'tip';
+      canvas.parentNode.appendChild(tipEl);
+    }
+    var p = n.post;
+    var body = p.text || p.caption || '';
+    tipEl.innerHTML =
+      '<div class="h">@' + esc(p.handle || '') + '</div>' +
+      '<div class="t">' + (esc(body) || '<i>no text</i>') + '</div>' +
+      '<div class="g">' + (p.tags.length ? esc(p.tags.join(' · ')) : p.kind) + '</div>';
+    var w = canvas.clientWidth, h = canvas.clientHeight;
+    tipEl.style.left = Math.min(px + 16, w - 316) + 'px';
+    tipEl.style.top = Math.min(py + 16, h - 140) + 'px';
+  }
+
+  function esc(s) {
+    return String(s).replace(/[&<>"]/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c];
+    });
+  }
+
+  /* ---------------------------------------------------------------- popup */
+
+  function openPost(post) {
+    XL.open(post, function (dir, current) {
+      if (!visibleOrder.length) return;
+      // A post reached through "more like this" may sit outside the current
+      // filter; step from the start of the list rather than going dead.
+      var i = visibleOrder.indexOf(current);
+      var next = i === -1 ? visibleOrder[dir > 0 ? 0 : visibleOrder.length - 1]
+        : visibleOrder[(i + dir + visibleOrder.length) % visibleOrder.length];
+      openPost(next);
+    });
+  }
+
+  /* -------------------------------------------------------------- sidebar */
+
+  function chip(label, n) {
+    var el = document.createElement('button');
+    el.className = 'chip';
+    el.textContent = label;
+    if (n !== undefined) {
+      var s = document.createElement('span');
+      s.className = 'n';
+      s.textContent = n;
+      el.appendChild(s);
+    }
+    return el;
+  }
+
+  function buildSidebar(state) {
+    [['image', 'images'], ['video', 'videos'], ['text', 'text only']]
+      .forEach(function (k) {
+        var n = state.posts.filter(function (p) { return p.kind === k[0]; }).length;
+        var el = chip(k[1], n);
+        if (XL.filter.kinds.indexOf(k[0]) !== -1) el.classList.add('on');
+        el.onclick = function () {
+          XL.toggle(XL.filter.kinds, k[0]);
+          el.classList.toggle('on');
+          applyFilter();
+        };
+        document.getElementById('kinds').appendChild(el);
+      });
+
+    if (state.categories.length) {
+      document.getElementById('catGroup').hidden = false;
+      state.categories.forEach(function (c) {
+        var el = chip(c.name, c.count);
+        if (XL.filter.categories.indexOf(c.name) !== -1) el.classList.add('on');
+        el.onclick = function () {
+          XL.toggle(XL.filter.categories, c.name);
+          el.classList.toggle('on');
+          applyFilter();
+        };
+        document.getElementById('cats').appendChild(el);
+      });
+    }
+
+    var cbox = document.getElementById('clusters');
+    state.clusters.slice().sort(function (a, b) { return b.size - a.size; })
+      .forEach(function (c) {
+        if (!c.size) return;
+        var row = document.createElement('div');
+        row.className = 'crow';
+        row.innerHTML = '<span class="dot" style="background:' + c.color + '"></span>' +
+                        '<span class="nm"></span><span class="n">' + c.size + '</span>';
+        row.querySelector('.nm').textContent = c.name;
+        row.title = (c.tags || []).join(', ');
+        if (XL.filter.clusters.indexOf(c.id) !== -1) row.classList.add('on');
+        row.onclick = function () {
+          XL.toggle(XL.filter.clusters, c.id);
+          row.classList.toggle('on');
+          applyFilter();
+          if (XL.filter.clusters.length === 1) {
+            frameOn(nodes.filter(function (n) { return n.c === XL.filter.clusters[0]; }), 2.4);
+          }
+        };
+        cbox.appendChild(row);
+      });
+
+    var tbox = document.getElementById('tags');
+    state.tagList.slice(0, 60).forEach(function (t) {
+      var el = chip(t.tag, t.count);
+      if (XL.filter.tags.indexOf(t.tag) !== -1) el.classList.add('on');
+      el.onclick = function () {
+        XL.toggle(XL.filter.tags, t.tag);
+        el.classList.toggle('on');
+        applyFilter();
+      };
+      tbox.appendChild(el);
+    });
+
+    document.querySelectorAll('#tagMode button').forEach(function (b) {
+      b.classList.toggle('on', b.dataset.m === XL.filter.tagMode);
+      b.onclick = function () {
+        document.querySelectorAll('#tagMode button').forEach(function (o) {
+          o.classList.toggle('on', o === b);
+        });
+        XL.filter.tagMode = b.dataset.m;
+        applyFilter();
+      };
+    });
+
+    document.querySelectorAll('[data-clear]').forEach(function (btn) {
+      btn.onclick = function () {
+        var which = btn.dataset.clear;
+        ({ cats: XL.filter.categories, clusters: XL.filter.clusters,
+           tags: XL.filter.tags })[which].length = 0;
+        syncChips();
+        applyFilter();
+        if (which === 'clusters') fit();
+      };
+    });
+
+    document.getElementById('clearAll').onclick = function () {
+      XL.clearAll();
+      document.getElementById('q').value = '';
+      if (timeline) timeline.setRange(null);
+      syncChips();
+      applyFilter();
+      fit();
+    };
+
+    var q = document.getElementById('q'), t;
+    q.value = XL.filter.query;
+    q.oninput = function () {
+      clearTimeout(t);
+      t = setTimeout(function () { XL.filter.query = q.value; applyFilter(); }, 140);
+    };
+
+    var off = document.getElementById('offline');
+    off.checked = XL.state.offline;
+    off.onchange = function () {
+      XL.setOffline(off.checked);
+      imgs = new WeakMap();
+      nodes.forEach(function (n) { n.imgA = 0; });
+      invalidate();
+    };
+
+    timeline = XLTimeline.create({
+      canvas: document.getElementById('timeline'),
+      onChange: function (r) { XL.filter.range = r; applyFilter(); }
+    });
+    timeline.build(state.posts);
+    if (XL.filter.range) timeline.setRange(XL.filter.range);
+
+    XL.shortcuts({ search: q, clear: function () {
+      XL.clearAll();
+      q.value = '';
+      if (timeline) timeline.setRange(null);
+      syncChips();
+      applyFilter();
+    } });
+
+    document.getElementById('toGrid').onclick = function (e) {
+      e.preventDefault();
+      location.href = XL.url.link('grid.html');
+    };
+  }
+
+  function syncChips() {
+    document.querySelectorAll('#cats .chip').forEach(function (el) {
+      el.classList.toggle('on',
+        XL.filter.categories.indexOf(el.firstChild.nodeValue) !== -1);
+    });
+    document.querySelectorAll('#tags .chip').forEach(function (el) {
+      el.classList.toggle('on',
+        XL.filter.tags.indexOf(el.firstChild.nodeValue) !== -1);
+    });
+    document.querySelectorAll('#kinds .chip').forEach(function (el) {
+      var map = { images: 'image', videos: 'video', 'text only': 'text' };
+      el.classList.toggle('on',
+        XL.filter.kinds.indexOf(map[el.firstChild.nodeValue]) !== -1);
+    });
+    document.querySelectorAll('#clusters .crow').forEach(function (row, i) {
+      var sorted = XL.state.clusters.slice()
+        .sort(function (a, b) { return b.size - a.size; })
+        .filter(function (c) { return c.size; });
+      if (sorted[i]) row.classList.toggle('on',
+        XL.filter.clusters.indexOf(sorted[i].id) !== -1);
+    });
+  }
+
+  function applyFilter() {
+    var shown = 0, perCluster = {};
+    visibleOrder = [];
+    nodes.forEach(function (n) {
+      n.vis = XL.matches(n.post);
+      if (n.vis) {
+        shown++;
+        visibleOrder.push(n.post);
+        if (n.c >= 0) perCluster[n.c] = (perCluster[n.c] || 0) + 1;
+      }
+    });
+    hulls.forEach(function (hl) { hl.visible = perCluster[hl.c] || 0; });
+    if (GL) {
+      GL.setHullAlpha(function (c) {
+        var hl = hulls.filter(function (x) { return x.c === c; })[0];
+        return hl ? 0.15 + 0.85 * (hl.visible / hl.count) : 1;
+      });
+    }
+    document.getElementById('count').textContent =
+      XL.filterActive() ? XL.fmtCount(shown) + ' of ' + XL.fmtCount(nodes.length)
+                        : XL.fmtCount(nodes.length) + ' posts';
+    document.getElementById('clearAll').hidden = !XL.filterActive();
+    syncLasso();
+    if (timeline) timeline.update(visibleOrder);
+    XL.url.write();
+    invalidate();
+  }
+
+  window.addEventListener('resize', resize);
+  resize();
+  invalidate();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,752 @@
+:root {
+  --bg: #0a0e14;
+  --panel: #111721;
+  --panel-2: #182029;
+  --line: #232c38;
+  --ink: #e6edf3;
+  --ink-dim: #8b98a5;
+  --ink-faint: #6b7785;
+  --accent: #6ea8fe;
+  --accent-2: #9ccbff;
+  --accent-soft: rgba(110, 168, 254, .15);
+  --glow: 0 0 24px rgba(110, 168, 254, .22);
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  height: 100%;
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 13px/1.5 "Segoe UI", system-ui, -apple-system, sans-serif;
+  overflow: hidden;
+}
+
+body.xl-locked { overflow: hidden; }
+
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+button, input, select { font: inherit; color: inherit; }
+code {
+  background: var(--panel-2);
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: 11.5px;
+}
+
+/* ------------------------------------------------------------- layout */
+
+.app {
+  display: grid;
+  grid-template-columns: 276px 1fr;
+  height: 100vh;
+}
+
+.side {
+  background: linear-gradient(180deg, #131b26, var(--panel));
+  border-right: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.side header { padding: 15px 16px 11px; border-bottom: 1px solid var(--line); }
+
+.side h1 {
+  margin: 0 0 2px;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 1.4px;
+  text-transform: uppercase;
+}
+
+.side .sub { color: var(--ink-dim); font-size: 11.5px; }
+
+.side .scroll {
+  overflow-y: auto;
+  padding: 13px 16px 26px;
+  flex: 1;
+  min-height: 0;
+  scrollbar-width: thin;
+  scrollbar-color: var(--line) transparent;
+}
+
+.views { display: flex; gap: 6px; margin-top: 11px; }
+
+.views a {
+  flex: 1;
+  text-align: center;
+  padding: 5px 0;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  color: var(--ink-dim);
+  font-size: 12px;
+  transition: .15s;
+}
+
+.views a.on {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--ink);
+  box-shadow: var(--glow);
+}
+
+.views a:hover { text-decoration: none; color: var(--ink); }
+
+/* ------------------------------------------------------------ controls */
+
+.search {
+  width: 100%;
+  padding: 8px 11px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  outline: none;
+  transition: .15s;
+}
+
+.search:focus { border-color: var(--accent); box-shadow: var(--glow); }
+
+.group { margin-top: 18px; }
+
+.group h2 {
+  margin: 0 0 8px;
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--ink-faint);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.group h2 button {
+  background: none;
+  border: 0;
+  color: var(--ink-faint);
+  cursor: pointer;
+  font-size: 10.5px;
+  letter-spacing: .3px;
+  text-transform: none;
+  padding: 0;
+}
+
+.group h2 button:hover { color: var(--accent); }
+
+.chips { display: flex; flex-wrap: wrap; gap: 5px; }
+
+.chip {
+  padding: 3px 9px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel-2);
+  color: var(--ink-dim);
+  cursor: pointer;
+  font-size: 11.5px;
+  white-space: nowrap;
+  transition: .13s;
+}
+
+.chip:hover { color: var(--ink); border-color: #3a4553; }
+
+.chip.on {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--ink);
+  box-shadow: var(--glow);
+}
+
+.chip .n { opacity: .5; margin-left: 5px; font-size: 10.5px; }
+
+.mode {
+  display: inline-flex;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  overflow: hidden;
+  margin-bottom: 8px;
+}
+
+.mode button {
+  background: var(--panel-2);
+  border: 0;
+  padding: 4px 11px;
+  cursor: pointer;
+  color: var(--ink-dim);
+  font-size: 11px;
+}
+
+.mode button.on { background: var(--accent-soft); color: var(--ink); }
+
+.clist { display: flex; flex-direction: column; gap: 2px; }
+
+.crow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 7px;
+  border-radius: 6px;
+  cursor: pointer;
+  color: var(--ink-dim);
+  transition: .13s;
+}
+
+.crow:hover { background: var(--panel-2); color: var(--ink); }
+.crow.on { background: var(--accent-soft); color: var(--ink); }
+
+.crow .dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex: none;
+  box-shadow: 0 0 8px currentColor;
+}
+
+.crow .nm { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.crow .n { opacity: .45; font-size: 11px; }
+
+.lasso-chip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 9px;
+  border: 1px solid var(--accent);
+  background: var(--accent-soft);
+  border-radius: 8px;
+  font-size: 11.5px;
+  box-shadow: var(--glow);
+}
+
+.lasso-chip span { flex: 1; }
+.lasso-chip button {
+  background: none;
+  border: 0;
+  color: var(--ink-dim);
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
+  padding: 0;
+}
+.lasso-chip button:hover { color: var(--ink); }
+
+.timeline {
+  width: 100%;
+  height: 70px;
+  display: block;
+  cursor: crosshair;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, .18);
+}
+
+.foot {
+  padding: 8px 16px;
+  border-top: 1px solid var(--line);
+  color: var(--ink-dim);
+  font-size: 11px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
+.foot label { display: flex; align-items: center; gap: 5px; cursor: pointer; }
+
+.linky {
+  background: none;
+  border: 0;
+  color: var(--accent);
+  cursor: pointer;
+  font-size: 11px;
+  padding: 0;
+}
+
+/* ---------------------------------------------------------------- map */
+
+.stage { position: relative; min-width: 0; }
+
+/* the GL canvas and the 2D text overlay are stacked exactly on top of one
+   another; only the lower one takes pointer events */
+.stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+canvas#ov { pointer-events: none; }
+canvas#cv { display: block; cursor: grab; }
+canvas#cv.dragging { cursor: grabbing; }
+canvas#cv.lassoing { cursor: crosshair; }
+
+.hud {
+  position: absolute;
+  left: 15px;
+  bottom: 13px;
+  color: var(--ink-faint);
+  font-size: 11.5px;
+  pointer-events: none;
+  text-shadow: 0 1px 4px #000;
+}
+
+.zoombar { position: absolute; right: 15px; bottom: 13px; display: flex; gap: 6px; }
+
+.zoombar button {
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: rgba(17, 23, 33, .92);
+  color: var(--ink);
+  cursor: pointer;
+  line-height: 1;
+  transition: .13s;
+}
+
+.zoombar button:hover { border-color: var(--accent); color: var(--accent-2); }
+.zoombar button.on {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  box-shadow: var(--glow);
+}
+.zoombar button.wide { width: auto; padding: 0 11px; font-size: 11.5px; }
+
+.tip {
+  position: absolute;
+  pointer-events: none;
+  max-width: 300px;
+  padding: 9px 11px;
+  background: rgba(10, 14, 20, .97);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, .6);
+  z-index: 20;
+}
+
+.tip .h { color: var(--accent-2); font-size: 11.5px; margin-bottom: 3px; }
+.tip .t { font-size: 12px; max-height: 78px; overflow: hidden; }
+.tip .g { color: var(--ink-faint); font-size: 11px; margin-top: 5px; }
+
+/* ------------------------------------------------------------ loading */
+
+.loading {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 11px;
+  text-align: center;
+  background: var(--bg);
+  z-index: 30;
+  transition: opacity .3s;
+}
+
+.loading.hide { opacity: 0; pointer-events: none; }
+
+.lstage { font-size: 13px; letter-spacing: .3px; }
+.lsub { color: var(--ink-faint); font-size: 11.5px; min-height: 17px; }
+
+.loading .bar {
+  width: 260px;
+  height: 3px;
+  background: var(--panel-2);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.loading .bar i {
+  display: block;
+  height: 100%;
+  width: 0;
+  background: linear-gradient(90deg, var(--accent), var(--accent-2));
+  box-shadow: var(--glow);
+  transition: width .18s;
+}
+
+/* stages with no byte count get a sweep rather than a bar stuck at zero */
+.loading .bar.indet i {
+  width: 38%;
+  transition: none;
+  animation: slide 1.15s ease-in-out infinite;
+}
+
+@keyframes slide {
+  from { transform: translateX(-110%); }
+  to { transform: translateX(300%); }
+}
+
+/* --------------------------------------------------------------- grid */
+
+.gridwrap { overflow-y: auto; padding: 16px; min-height: 0; position: relative; }
+
+.masonry { column-gap: 10px; }
+
+.card {
+  break-inside: avoid;
+  margin: 0 0 10px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  overflow: hidden;
+  cursor: pointer;
+  position: relative;
+  transition: border-color .15s, transform .15s;
+}
+
+.card:hover { border-color: var(--accent); transform: translateY(-2px); }
+
+.card .shot { position: relative; width: 100%; background: var(--panel-2); }
+
+.card .shot img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  opacity: 0;
+  transition: opacity .3s;
+}
+
+.card .shot img.on { opacity: 1; }
+.card .shot.blank::after {
+  content: 'unavailable';
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  color: var(--ink-faint);
+  font-size: 11px;
+}
+
+/* Shimmer while the thumbnail is still on the wire. */
+.skel {
+  background: linear-gradient(100deg, #182029 30%, #212b36 50%, #182029 70%);
+  background-size: 220% 100%;
+  animation: sweep 1.4s linear infinite;
+}
+
+@keyframes sweep {
+  from { background-position: 140% 0; }
+  to { background-position: -40% 0; }
+}
+
+.card .cap { padding: 7px 10px 10px; font-size: 12px; color: var(--ink-dim); }
+.card .cap b { color: var(--ink); font-weight: 600; }
+.card.text .cap { color: var(--ink); font-size: 13px; }
+
+.card .play {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  background: rgba(0, 0, 0, .66);
+  border-radius: 6px;
+  padding: 1px 7px;
+  font-size: 11px;
+}
+
+.sentinel { height: 1px; }
+
+/* -------------------------------------------------------------- popup */
+
+.xl-popup { position: fixed; inset: 0; z-index: 100; }
+
+.xl-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(3, 6, 10, .86);
+  backdrop-filter: blur(4px);
+}
+
+.xl-panel {
+  position: relative;
+  margin: 3vh auto;
+  width: min(1060px, 90vw);      /* JS narrows this to the media's aspect */
+  max-width: 90vw;
+  max-height: 94vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  overflow: hidden;
+  box-shadow: 0 30px 80px rgba(0, 0, 0, .6);
+}
+
+.xl-media {
+  overflow: hidden;
+  background: #05080c;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 0;
+  flex: 0 0 auto;
+}
+
+.xl-media.xl-textonly { display: none; }
+
+.xl-panel.xl-textpost {
+  width: min(660px, 92vw);
+  margin-top: max(3vh, calc(50vh - 220px));
+}
+
+.xl-textpost .xl-meta { padding: 22px 26px 22px; }
+
+.xl-textpost .xl-text {
+  font-size: 17px;
+  line-height: 1.62;
+  margin: 0 0 18px;
+  max-height: 56vh;
+  color: var(--ink);
+}
+
+.xl-textpost .xl-head { font-size: 13px; }
+
+.xl-shot {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.xl-shot img, .xl-shot video {
+  max-width: 100%;
+  max-height: 100%;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+  display: block;
+}
+
+.xl-count {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  background: rgba(0, 0, 0, .62);
+  border-radius: 999px;
+  padding: 2px 9px;
+  font-size: 11px;
+  letter-spacing: .3px;
+}
+
+/* filmstrip for the 396 posts that carry more than one image */
+.xl-gallery {
+  display: flex;
+  gap: 7px;
+  padding: 9px;
+  justify-content: center;
+  flex-wrap: wrap;
+  background: #05080c;
+  border-top: 1px solid var(--line);
+}
+
+.xl-gt {
+  width: 58px;
+  height: 58px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--panel-2);
+  cursor: pointer;
+  opacity: .5;
+  transition: .14s;
+}
+
+.xl-gt img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.xl-gt:hover { opacity: .85; }
+.xl-gt.on { opacity: 1; border-color: var(--accent); box-shadow: var(--glow); }
+
+/* The already-decoded thumbnail paints instantly under the full-size image. */
+.xl-ph {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  filter: blur(16px);
+  transform: scale(1.04);
+  opacity: .85;
+}
+
+.xl-full { position: relative; opacity: 0; transition: opacity .35s; }
+.xl-full.on { opacity: 1; }
+
+.xl-shot.xl-failed::after {
+  content: 'media unavailable — open on X';
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  color: var(--ink-faint);
+  font-size: 12px;
+}
+
+.xl-spin {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 26px;
+  height: 26px;
+  margin: -13px 0 0 -13px;
+  border: 2px solid rgba(255, 255, 255, .16);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin .8s linear infinite;
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.xl-galwrap { flex: 0 0 auto; }
+.xl-meta {
+  padding: 15px 18px 18px;
+  overflow-y: auto;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.xl-head { display: flex; gap: 10px; align-items: baseline; margin-bottom: 10px; }
+.xl-handle { font-weight: 600; }
+.xl-time { color: var(--ink-faint); font-size: 11.5px; }
+
+.xl-text { margin: 0 0 14px; max-height: 20vh; overflow: auto; }
+.xl-text p { margin: 0 0 0.6em; }
+.xl-text p:last-child { margin-bottom: 0; }
+
+.xl-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
+
+.xl-tag {
+  font-size: 11px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  color: var(--ink-dim);
+}
+
+.xl-tag.xl-cat {
+  border-color: var(--accent);
+  color: var(--accent-2);
+  text-transform: uppercase;
+  letter-spacing: .6px;
+  font-size: 10px;
+}
+
+.xl-link { display: inline-block; }
+
+.xl-more { margin-top: 18px; border-top: 1px solid var(--line); padding-top: 16px; }
+
+.xl-more h3 {
+  margin: 0 0 11px;
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--ink-faint);
+  font-weight: 600;
+}
+
+.xl-strip {
+  display: flex;
+  gap: 7px;
+  overflow-x: auto;
+  /* room for the 2px hover lift and the 2px focus ring: overflow-x:auto forces
+     overflow-y to auto, so anything outside the padding box gets clipped */
+  padding: 6px 2px 9px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--line) transparent;
+}
+
+.xl-strip::-webkit-scrollbar { height: 6px; }
+.xl-strip::-webkit-scrollbar-track { background: transparent; }
+.xl-strip::-webkit-scrollbar-thumb {
+  background: var(--line);
+  border-radius: 3px;
+}
+.xl-strip::-webkit-scrollbar-thumb:hover { background: #3a4553; }
+
+.xl-near {
+  flex: none;
+  width: 74px;
+  height: 74px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  overflow: hidden;
+  background: var(--panel-2);
+  cursor: pointer;
+  transition: .14s;
+  user-select: none;
+}
+
+.xl-near.skel, .xl-gt.skel {
+  background: linear-gradient(100deg, #182029 30%, #212b36 50%, #182029 70%);
+  background-size: 220% 100%;
+  animation: sweep 1.4s linear infinite;
+}
+
+.xl-near:focus:not(:focus-visible),
+.xl-gt:focus:not(:focus-visible) { outline: none; }
+
+.xl-near:focus-visible,
+.xl-gt:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.xl-near:hover { border-color: var(--accent); transform: translateY(-2px); }
+.xl-near img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.xl-near-text {
+  opacity: 1;
+  background: var(--panel-2);
+  text-align: left;
+  width: 116px;              /* words need more room than a picture does */
+  position: relative;
+}
+
+.xl-near-text span {
+  display: block;
+  padding: 7px 8px;
+  font-size: 9.5px;
+  line-height: 1.35;
+  color: var(--ink-dim);
+  height: 100%;
+  overflow: hidden;
+}
+
+/* fade the clipped last line instead of guillotining it */
+.xl-near-text::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 18px;
+  background: linear-gradient(transparent, var(--panel-2));
+  pointer-events: none;
+}
+
+.xl-near-text:hover span { color: var(--ink); }
+.xl-near-blank { opacity: .35; }
+
+.xl-close, .xl-nav {
+  position: absolute;
+  z-index: 3;
+  border: 1px solid var(--line);
+  background: rgba(10, 14, 20, .85);
+  color: var(--ink);
+  cursor: pointer;
+  border-radius: 9px;
+  transition: .13s;
+}
+
+.xl-close { top: 11px; right: 11px; width: 31px; height: 31px; font-size: 18px; }
+.xl-nav {
+  position: fixed;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 36px;
+  height: 60px;
+  font-size: 22px;
+}
+.xl-prev { left: 12px; }
+.xl-next { right: 12px; }
+.xl-close:hover, .xl-nav:hover { border-color: var(--accent); color: var(--accent-2); }
+
+@media (max-width: 820px) {
+  .app { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
+  .side { max-height: 44vh; }
+}

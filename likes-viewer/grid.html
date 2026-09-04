@@ -1,0 +1,436 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>X Likes — Grid</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="app">
+  <aside class="side">
+    <header>
+      <h1>X Likes</h1>
+      <div class="sub" id="sub">loading…</div>
+      <nav class="views">
+        <a href="index.html" id="toMap">Map</a>
+        <a href="grid.html" class="on">Grid</a>
+      </nav>
+    </header>
+    <div class="scroll">
+      <input class="search" id="q" type="search" placeholder="Search text, tags, captions…">
+
+      <div class="group" id="lassoGroup" hidden>
+        <div class="lasso-chip">
+          <span id="lassoCount"></span>
+          <a href="index.html" id="lassoMap">see on map</a>
+          <button id="lassoClear" title="Clear selection">&times;</button>
+        </div>
+      </div>
+
+      <div class="group">
+        <h2>When</h2>
+        <canvas class="timeline" id="timeline"></canvas>
+      </div>
+
+      <div class="group">
+        <h2>Sort</h2>
+        <div class="mode" id="sort">
+          <button data-s="new" class="on">newest</button>
+          <button data-s="old">oldest</button>
+          <button data-s="topic">by topic</button>
+        </div>
+      </div>
+
+      <div class="group">
+        <h2>Media</h2>
+        <div class="chips" id="kinds"></div>
+      </div>
+
+      <div class="group" id="catGroup" hidden>
+        <h2>Categories <button data-clear="cats">clear</button></h2>
+        <div class="chips" id="cats"></div>
+      </div>
+
+      <div class="group" id="clusterGroup">
+        <h2>Topics <button data-clear="clusters">clear</button></h2>
+        <div class="clist" id="clusters"></div>
+      </div>
+
+      <div class="group">
+        <h2>Tags <button data-clear="tags">clear</button></h2>
+        <div class="mode" id="tagMode">
+          <button data-m="and" class="on">all of</button>
+          <button data-m="or">any of</button>
+        </div>
+        <div class="chips" id="tags"></div>
+      </div>
+    </div>
+    <div class="foot">
+      <span id="count"></span>
+      <button class="linky" id="clearAll" hidden>clear all</button>
+      <label><input type="checkbox" id="offline"> offline</label>
+    </div>
+  </aside>
+
+  <main class="gridwrap" id="wrap">
+    <div class="masonry" id="masonry"></div>
+    <div class="sentinel" id="sentinel"></div>
+    <div class="loading" id="loading">
+      <div class="lstage" id="lstage">reading likes.json</div>
+      <div class="bar"><i id="prog"></i></div>
+      <div class="lsub" id="lsub"></div>
+    </div>
+  </main>
+</div>
+
+<script src="likes-core.js"></script>
+<script src="timeline.js"></script>
+<script>
+(function () {
+  'use strict';
+
+  var PAGE = 120;
+  var masonry = document.getElementById('masonry');
+  var wrap = document.getElementById('wrap');
+  var shown = [], drawn = 0, sortMode = 'new', timeline = null;
+
+  var stageNames = {
+    likes: 'reading likes.json',
+    graph: 'reading the topic graph',
+    labels: 'reading labels'
+  };
+
+  function onProgress(p) {
+    document.getElementById('lstage').textContent = stageNames[p.stage] || p.stage;
+    var bar = document.querySelector('.loading .bar');
+    var known = p.total > 1;
+    bar.classList.toggle('indet', !known);
+    document.getElementById('prog').style.width =
+      known ? Math.min(100, p.loaded / p.total * 100).toFixed(1) + '%' : '';
+    document.getElementById('lsub').textContent =
+      known ? (p.loaded / 1048576).toFixed(1) + ' / ' +
+              (p.total / 1048576).toFixed(1) + ' MB' : '';
+  }
+
+  XL.load(onProgress).then(function (state) {
+    document.getElementById('sub').textContent =
+      XL.fmtCount(state.posts.length) + ' posts' +
+      (state.labelled ? ' · labelled' : state.graph ? ' · clustered' : '');
+    buildSidebar(state);
+    layout();
+    document.getElementById('loading').classList.add('hide');
+    apply();
+    var id = XL.state.restore.post;
+    if (id && state.byId[id]) open(state.byId[id]);
+  }).catch(function (e) {
+    document.getElementById('loading').innerHTML =
+      '<div class="lstage">could not load the archive</div>' +
+      '<div class="lsub">' + e.message + '<br><br>Serve the project folder:' +
+      '<br><code>python tools/serve.py</code></div>';
+  });
+
+  function layout() {
+    masonry.style.columnCount =
+      Math.max(2, Math.min(6, Math.round(wrap.clientWidth / 230)));
+  }
+  window.addEventListener('resize', layout);
+
+  /* ---------------------------------------------------------------- cards */
+
+  function card(post) {
+    var el = document.createElement('div');
+    el.className = 'card' + (post.kind === 'text' ? ' text' : '');
+    if (post.kind !== 'text') {
+      var shot = document.createElement('div');
+      shot.className = 'shot skel';
+      // Exact aspect from dims.json, so the column never reflows on load.
+      shot.style.aspectRatio = post.w ? post.w + ' / ' + post.h : '1';
+      var img = document.createElement('img');
+      img.alt = '';
+      img.loading = 'lazy';
+      shot.appendChild(img);
+      observer.observe(shot);
+      pending.set(shot, { post: post, img: img });
+      el.appendChild(shot);
+      if (post.kind === 'video') {
+        var b = document.createElement('span');
+        b.className = 'play';
+        b.textContent = '▶';
+        el.appendChild(b);
+      }
+    }
+    var cap = document.createElement('div');
+    cap.className = 'cap';
+    var who = document.createElement('b');
+    who.textContent = '@' + (post.handle || 'unknown');
+    cap.appendChild(who);
+    var t = post.text || post.caption || '';
+    if (t) {
+      cap.appendChild(document.createTextNode(' ' +
+        (t.length > 150 ? t.slice(0, 150) + '…' : t)));
+    }
+    el.appendChild(cap);
+    el.onclick = function () { open(post); };
+    return el;
+  }
+
+  var pending = new WeakMap();
+  var observer = new IntersectionObserver(function (entries) {
+    entries.forEach(function (en) {
+      if (!en.isIntersecting) return;
+      var shot = en.target, job = pending.get(shot);
+      observer.unobserve(shot);
+      if (!job) return;
+      XL.thumb(job.post, function (loaded) {
+        shot.classList.remove('skel');
+        if (loaded) {
+          job.img.src = loaded.src;
+          job.img.classList.add('on');
+        } else {
+          shot.classList.add('blank');
+        }
+      });
+    });
+  }, { root: wrap, rootMargin: '700px 0px' });
+
+  function draw(n) {
+    var frag = document.createDocumentFragment();
+    var end = Math.min(shown.length, drawn + n);
+    for (var i = drawn; i < end; i++) frag.appendChild(card(shown[i]));
+    masonry.appendChild(frag);
+    drawn = end;
+  }
+
+  var sentinel = new IntersectionObserver(function (e) {
+    if (e[0].isIntersecting && drawn < shown.length) draw(PAGE);
+  }, { root: wrap, rootMargin: '900px 0px' });
+  sentinel.observe(document.getElementById('sentinel'));
+
+  function open(post) {
+    XL.open(post, function (dir, current) {
+      if (!shown.length) return;
+      // A post reached through "more like this" may sit outside the current
+      // filter; step from the start of the list rather than going dead.
+      var i = shown.indexOf(current);
+      open(i === -1 ? shown[dir > 0 ? 0 : shown.length - 1]
+                    : shown[(i + dir + shown.length) % shown.length]);
+    });
+  }
+
+  /* --------------------------------------------------------------- filter */
+
+  function apply() {
+    shown = XL.state.posts.filter(XL.matches);
+    if (sortMode === 'new') {
+      shown.sort(function (a, b) { return b.t - a.t; });
+    } else if (sortMode === 'old') {
+      shown.sort(function (a, b) { return a.t - b.t; });
+    } else {
+      shown.sort(function (a, b) {
+        return (a.cluster - b.cluster) || (b.t - a.t);
+      });
+    }
+    document.getElementById('count').textContent =
+      XL.filterActive()
+        ? XL.fmtCount(shown.length) + ' of ' + XL.fmtCount(XL.state.posts.length)
+        : XL.fmtCount(XL.state.posts.length) + ' posts';
+    document.getElementById('clearAll').hidden = !XL.filterActive();
+    syncLasso();
+    if (timeline) timeline.update(shown);
+    XL.url.write();
+    masonry.innerHTML = '';
+    drawn = 0;
+    XL.cancelPending();
+    wrap.scrollTop = 0;
+    draw(PAGE);
+  }
+
+  function syncLasso() {
+    var g = document.getElementById('lassoGroup');
+    var on = !!XL.filter.lasso;
+    g.hidden = !on;
+    if (on) {
+      document.getElementById('lassoCount').textContent =
+        XL.fmtCount(XL.filter.lasso.size) + ' selected';
+    }
+  }
+
+  document.getElementById('lassoClear').onclick = function () {
+    XL.setLasso(null);
+    apply();
+  };
+
+  // Resolved on click, not on render: the hash is written on a debounce, so a
+  // href built during apply() would still be missing the selection key.
+  document.getElementById('lassoMap').onclick = function (e) {
+    e.preventDefault();
+    location.href = XL.url.link('index.html');
+  };
+
+  /* -------------------------------------------------------------- sidebar */
+
+  function chip(label, n) {
+    var el = document.createElement('button');
+    el.className = 'chip';
+    el.textContent = label;
+    if (n !== undefined) {
+      var s = document.createElement('span');
+      s.className = 'n';
+      s.textContent = n;
+      el.appendChild(s);
+    }
+    return el;
+  }
+
+  function buildSidebar(state) {
+    [['image', 'images'], ['video', 'videos'], ['text', 'text only']]
+      .forEach(function (k) {
+        var n = state.posts.filter(function (p) { return p.kind === k[0]; }).length;
+        var el = chip(k[1], n);
+        if (XL.filter.kinds.indexOf(k[0]) !== -1) el.classList.add('on');
+        el.onclick = function () {
+          XL.toggle(XL.filter.kinds, k[0]);
+          el.classList.toggle('on');
+          apply();
+        };
+        document.getElementById('kinds').appendChild(el);
+      });
+
+    if (state.categories.length) {
+      document.getElementById('catGroup').hidden = false;
+      state.categories.forEach(function (c) {
+        var el = chip(c.name, c.count);
+        if (XL.filter.categories.indexOf(c.name) !== -1) el.classList.add('on');
+        el.onclick = function () {
+          XL.toggle(XL.filter.categories, c.name);
+          el.classList.toggle('on');
+          apply();
+        };
+        document.getElementById('cats').appendChild(el);
+      });
+    }
+
+    if (!state.clusters.length) document.getElementById('clusterGroup').hidden = true;
+    state.clusters.slice().sort(function (a, b) { return b.size - a.size; })
+      .forEach(function (c) {
+        if (!c.size) return;
+        var row = document.createElement('div');
+        row.className = 'crow';
+        row.innerHTML = '<span class="dot" style="background:' + c.color + '"></span>' +
+                        '<span class="nm"></span><span class="n">' + c.size + '</span>';
+        row.querySelector('.nm').textContent = c.name;
+        row.title = (c.tags || []).join(', ');
+        if (XL.filter.clusters.indexOf(c.id) !== -1) row.classList.add('on');
+        row.onclick = function () {
+          XL.toggle(XL.filter.clusters, c.id);
+          row.classList.toggle('on');
+          apply();
+        };
+        document.getElementById('clusters').appendChild(row);
+      });
+
+    state.tagList.slice(0, 60).forEach(function (t) {
+      var el = chip(t.tag, t.count);
+      if (XL.filter.tags.indexOf(t.tag) !== -1) el.classList.add('on');
+      el.onclick = function () {
+        XL.toggle(XL.filter.tags, t.tag);
+        el.classList.toggle('on');
+        apply();
+      };
+      document.getElementById('tags').appendChild(el);
+    });
+
+    document.querySelectorAll('#tagMode button').forEach(function (b) {
+      b.classList.toggle('on', b.dataset.m === XL.filter.tagMode);
+      b.onclick = function () {
+        document.querySelectorAll('#tagMode button').forEach(function (o) {
+          o.classList.toggle('on', o === b);
+        });
+        XL.filter.tagMode = b.dataset.m;
+        apply();
+      };
+    });
+
+    document.querySelectorAll('#sort button').forEach(function (b) {
+      b.onclick = function () {
+        document.querySelectorAll('#sort button').forEach(function (o) {
+          o.classList.toggle('on', o === b);
+        });
+        sortMode = b.dataset.s;
+        apply();
+      };
+    });
+
+    document.querySelectorAll('[data-clear]').forEach(function (btn) {
+      btn.onclick = function () {
+        ({ cats: XL.filter.categories, clusters: XL.filter.clusters,
+           tags: XL.filter.tags })[btn.dataset.clear].length = 0;
+        syncChips();
+        apply();
+      };
+    });
+
+    document.getElementById('clearAll').onclick = clearEverything;
+
+    var q = document.getElementById('q'), t;
+    q.value = XL.filter.query;
+    q.oninput = function () {
+      clearTimeout(t);
+      t = setTimeout(function () { XL.filter.query = q.value; apply(); }, 160);
+    };
+
+    var off = document.getElementById('offline');
+    off.checked = XL.state.offline;
+    off.onchange = function () { XL.setOffline(off.checked); apply(); };
+
+    timeline = XLTimeline.create({
+      canvas: document.getElementById('timeline'),
+      onChange: function (r) { XL.filter.range = r; apply(); }
+    });
+    timeline.build(state.posts);
+    if (XL.filter.range) timeline.setRange(XL.filter.range);
+
+    XL.shortcuts({ search: q, clear: clearEverything });
+
+    document.getElementById('toMap').onclick = function (e) {
+      e.preventDefault();
+      location.href = XL.url.link('index.html');
+    };
+  }
+
+  function clearEverything() {
+    XL.clearAll();
+    document.getElementById('q').value = '';
+    if (timeline) timeline.setRange(null);
+    syncChips();
+    apply();
+  }
+
+  function syncChips() {
+    var kindMap = { images: 'image', videos: 'video', 'text only': 'text' };
+    document.querySelectorAll('#cats .chip').forEach(function (el) {
+      el.classList.toggle('on',
+        XL.filter.categories.indexOf(el.firstChild.nodeValue) !== -1);
+    });
+    document.querySelectorAll('#tags .chip').forEach(function (el) {
+      el.classList.toggle('on',
+        XL.filter.tags.indexOf(el.firstChild.nodeValue) !== -1);
+    });
+    document.querySelectorAll('#kinds .chip').forEach(function (el) {
+      el.classList.toggle('on',
+        XL.filter.kinds.indexOf(kindMap[el.firstChild.nodeValue]) !== -1);
+    });
+    var sorted = XL.state.clusters.slice()
+      .sort(function (a, b) { return b.size - a.size; })
+      .filter(function (c) { return c.size; });
+    document.querySelectorAll('#clusters .crow').forEach(function (row, i) {
+      if (sorted[i]) {
+        row.classList.toggle('on', XL.filter.clusters.indexOf(sorted[i].id) !== -1);
+      }
+    });
+  }
+})();
+</script>
+</body>
+</html>

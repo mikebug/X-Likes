@@ -1,0 +1,10 @@
+# Core pipeline. A CPU-only torch build is fine:
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+torch
+torchvision
+open_clip_torch
+numpy
+Pillow
+
+# Only needed for the optional labelling step (tools/label.py)
+anthropic

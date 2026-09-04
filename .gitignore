@@ -1,0 +1,37 @@
+# This repo is the tooling. The archive it produces is personal content and
+# stays local - it is also far too big for git (media/ runs to ~13 GB).
+
+# Scraped content
+likes.json
+media/
+
+# Derived from that content
+labels.json
+graph.json
+embeddings.npy
+embed_index.json
+
+# Batch job ids for an in-flight labelling run
+.label_batches.json
+
+# Secrets - the API key belongs in the environment, never in the repo
+.env
+.env.*
+*.key
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+
+# local safety copy of the paid labelling run
+backup/
