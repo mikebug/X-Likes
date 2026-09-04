@@ -110,14 +110,21 @@ up called "art".
 
 ## 3. View
 
+Double-click **`Open X Likes.pyw`**. It starts the server, opens the viewer in
+your browser, and leaves a small window showing what is loaded and a Stop
+button. No terminal, and nothing to install beyond what the pipeline already
+needs - it is stdlib Tkinter. Closing the window stops the server.
+
+From a terminal instead:
+
 ```
-python tools/serve.py
+python tools/serve.py --open
 ```
 
-then open <http://localhost:8000/likes-viewer/>. Use this rather than
-`python -m http.server`: that one handles a single request at a time, and the
-viewer pulls thumbnails ten at a time, so everything queues behind everything
-else.
+Either way, use this rather than `python -m http.server`: that one handles a
+single request at a time, and the viewer pulls thumbnails ten at a time, so
+everything queues behind everything else. The port is chosen automatically from
+8000 upward, so a second copy still launches.
 
 **Map** — every post is a point placed by content similarity, so topics show up
 as coloured islands. Zoom in and the points become the pictures themselves.
