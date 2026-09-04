@@ -160,3 +160,7 @@ failed to download.
   plain coloured dots.
 * `labels.json` is the one artifact you pay for. It is gitignored, so keep a
   backup before re-running anything that could overwrite it.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
