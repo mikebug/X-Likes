@@ -12,6 +12,8 @@ Similarity is continuous, which is the point: a post that is both *art* and
 *robots* genuinely lands between those two groups and links more strongly to
 other art-robot posts than to plain art. Tags cannot express that; vectors can.
 
+![The whole archive as one map](docs/map-overview.jpg)
+
 > This repo is the tooling only. Your likes, your media and everything derived
 > from them stay on your machine — see [.gitignore](.gitignore).
 
@@ -120,6 +122,13 @@ else.
 **Map** — every post is a point placed by content similarity, so topics show up
 as coloured islands. Zoom in and the points become the pictures themselves.
 
+![Topics as coloured islands](docs/map-topics.jpg)
+
+Zoom further and every circle is the post itself — the atlas means all of them
+can carry their picture at once.
+
+![Individual posts at full zoom](docs/map-detail.jpg)
+
 * drag to pan, scroll to zoom, **fit** re-frames everything
 * click a topic in the sidebar to isolate and fly to it
 * **shift-drag** (or the ◌ button) lassoes any group, then *view in grid* carries
@@ -145,6 +154,13 @@ like this** is the eight nearest posts in CLIP space. Text-only posts have
 text-only neighbours — they are embedded from words alone and sit apart from
 everything with a picture — so those tiles show the text instead of an empty
 frame.
+
+![A post with its caption, tags and nearest neighbours](docs/post-image.jpg)
+
+The caption and tags above come from the labelling pass; **more like this** comes
+from the vectors. Video posts play in place, with the same neighbours underneath.
+
+![A video post](docs/post-video.jpg)
 
 Tick **offline** to stop the viewer falling back to X's CDN for anything that
 failed to download.
